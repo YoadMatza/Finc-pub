@@ -7,7 +7,7 @@ import { type Connection, type ParsedKey, Server, type SFTPWrapper, utils } from
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from './api/app.js';
 import { type BackupDeps, BackupJob } from './backup.js';
-import { HostKeyChangedError, NAS_ENTRY, type NasConfig, OffsiteJob, SftpTarget, fingerprint, generateBackupKey, probeHostKey } from './offsite.js';
+import { HostKeyChangedError, NAS_ENTRY, type NasConfig, OffsiteJob, SftpTarget, fingerprint, generateBackupKey, generateSshKeyPair, probeHostKey } from './offsite.js';
 import { Scheduler, type SchedulerDeps } from './scheduler.js';
 import type { WorkerState } from './server.js';
 
@@ -34,7 +34,7 @@ function parse(k: string): ParsedKey {
 }
 
 async function startFakeNas(root: string): Promise<FakeNas> {
-  const host = utils.generateKeyPairSync('ed25519');
+  const host = generateSshKeyPair();
   const allowed: ParsedKey[] = [];
   const clients = new Set<Connection>();
   const nas: FakeNas = {
@@ -253,6 +253,14 @@ describe('SftpTarget against a local SSH server', () => {
     expect(key.privateKey).toContain('OPENSSH PRIVATE KEY');
   });
 
+  it('every generated key reads back (ssh2 alone writes a broken one about 1 time in 256)', () => {
+    for (let i = 0; i < 1500; i++) {
+      const k = generateBackupKey();
+      expect(utils.parseKey(k.publicKey)).not.toBeInstanceOf(Error);
+      expect(utils.parseKey(k.privateKey)).not.toBeInstanceOf(Error);
+    }
+  });
+
   it('connects with the pinned host key, puts via a temporary name and a rename, reads back, lists, never overwrites', async () => {
     nas.allow(key.publicKey);
     const t = await SftpTarget.open(cfg);
@@ -279,7 +287,7 @@ describe('SftpTarget against a local SSH server', () => {
 
   it('refuses a NAS whose host key is not the pinned one, before authenticating', async () => {
     nas.allow(key.publicKey);
-    const other = fingerprint(parse(utils.generateKeyPairSync('ed25519').public).getPublicSSH());
+    const other = fingerprint(parse(generateSshKeyPair().public).getPublicSSH());
     const err = await SftpTarget.open({ ...cfg, hostKey: other }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(HostKeyChangedError);
     expect(String((err as Error).message)).toMatch(/^the NAS host key changed \(expected SHA256:.* got SHA256:/);

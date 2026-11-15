@@ -67,9 +67,22 @@ export function describeNas(c: Pick<NasConfig, 'host' | 'port' | 'username' | 'd
   return `${c.username}@${c.host}${c.port === 22 ? '' : `:${c.port}`}:${c.dir}`;
 }
 
+/**
+ * A fresh ed25519 key pair in OpenSSH formats that ssh2 can read back. ssh2 1.17's generator drops a leading zero
+ * byte of the public key (about 1 key in 256), writing a 31-byte key that no SSH client accepts; such a pair is
+ * thrown away and made again (found by a CI run, 2026-11-15).
+ */
+export function generateSshKeyPair(comment?: string): { private: string; public: string } {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const k = utils.generateKeyPairSync('ed25519', comment ? { comment } : {});
+    if (!(utils.parseKey(k.public) instanceof Error) && !(utils.parseKey(k.private) instanceof Error)) return k;
+  }
+  throw new Error('could not make a readable ed25519 key');
+}
+
 /** A fresh ed25519 key pair for the NAS user, in OpenSSH formats. */
 export function generateBackupKey(): { privateKey: string; publicKey: string } {
-  const k = utils.generateKeyPairSync('ed25519', { comment: KEY_COMMENT });
+  const k = generateSshKeyPair(KEY_COMMENT);
   return { privateKey: k.private, publicKey: k.public.trim() };
 }
 
