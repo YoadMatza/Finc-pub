@@ -25,7 +25,7 @@ something that cannot be merged.
 Follow [docs/getting-started.md](docs/getting-started.md) sections 1–2. In short:
 
 ```bash
-corepack enable
+npm install -g pnpm@10.34.9
 ```
 
 ```bash

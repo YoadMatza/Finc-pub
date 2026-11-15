@@ -24,7 +24,7 @@ Supported sources today:
 
 | Tool | Version | Needed for |
 |---|---|---|
-| [Node.js](https://nodejs.org) | 22.22.2 or newer (24 recommended) | everything |
+| [Node.js](https://nodejs.org) | 22.22.2 or newer (26 recommended; the Docker image runs 26) | everything |
 | pnpm | 10.x (the repo pins the exact version) | building |
 | Git | any | getting the code |
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | current | the recommended way to run finc |
@@ -36,11 +36,14 @@ Supported sources today:
 Every outside service finc can use (banks, AI, Telegram, price and filing sources, DuckDNS, a NAS), with the account
 or key each one needs and exactly what it is sent, is listed in [external-services.md](external-services.md).
 
-Enable pnpm through Node's corepack (once):
+Install pnpm (once). The repo pins its exact version in `package.json`; any 10.x works to start, and this one
+matches:
 
 ```bash
-corepack enable
+npm install -g pnpm@10.34.9
 ```
+
+On Node 24 or older, `corepack enable` does the same. Node 25 and newer no longer include corepack.
 
 ---
 

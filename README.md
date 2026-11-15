@@ -376,7 +376,7 @@ Three containers from one compose file, the same on this PC and on a Raspberry P
 
 | Service | What | Ports |
 |---|---|---|
-| `worker` | hub + API + scheduler + bank connectors (Node 24, Debian Chromium) | 127.0.0.1:7733 (CLI and local browser) |
+| `worker` | hub + API + scheduler + bank connectors (Node 26, Debian Chromium) | 127.0.0.1:7733 (CLI and local browser) |
 | `caddy` | HTTPS for `finc-example.duckdns.org`, certificate via DuckDNS DNS-01, serves `data/apk/finc.apk` | 7443 (router forwards it) |
 | `duckdns` | keeps the DuckDNS name on this connection's public IP, every 5 minutes | — |
 

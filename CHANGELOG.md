@@ -17,6 +17,10 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
 - Dependencies: TypeScript 7, better-sqlite3 13 (ships its own binaries, so no C++ build tools are needed any more),
   react-router 8, @hono/node-server 2, and minor updates of hono, @inquirer/prompts and @simplewebauthn/server.
 - CI actions: checkout 7, setup-node 7, pnpm/action-setup 6.
+- The worker image runs Node 26 and installs pnpm with npm (Node 25+ has no corepack). CI tests Node 24 and 26.
+
+### Fixed
+- `finc backup nas setup` could hand out an unreadable SSH key (about 1 in 256; an ssh2 bug), now checked and remade.
 
 ## [0.8.13] - 2026-11-14
 

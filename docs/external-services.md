@@ -132,7 +132,7 @@ Building finc fetches code, not data. None of these see anything about your mone
 | What | From | When |
 |---|---|---|
 | npm packages | `registry.npmjs.org` | `pnpm install` |
-| pnpm itself | `registry.npmjs.org` (through corepack) | first `pnpm` command |
+| pnpm itself | `registry.npmjs.org` | `npm install -g pnpm` (or corepack on Node 24 and older) |
 | Chromium for bank logins on the host | Google's Chrome-for-Testing storage (Puppeteer) | `pnpm install`; skip with `PUPPETEER_SKIP_DOWNLOAD=true` if you only use Docker |
 | Base images (Node, Caddy, Alpine) | Docker Hub | `docker compose up --build` |
 | Debian packages (Chromium, fonts) | Debian mirrors | building the worker image |

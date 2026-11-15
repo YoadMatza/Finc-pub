@@ -1,6 +1,6 @@
-# finc worker image: Node 24 + Debian Chromium for israeli-bank-scrapers (Puppeteer).
-# Pinned by digest (security audit 2026-11-09, L1); refresh with: docker buildx imagetools inspect node:24-bookworm-slim --format '{{.Manifest.Digest}}'
-FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS base
+# finc worker image: Node 26 + Debian Chromium for israeli-bank-scrapers (Puppeteer).
+# Pinned by digest (security audit 2026-11-09, L1); refresh with: docker buildx imagetools inspect node:26-bookworm-slim --format '{{.Manifest.Digest}}'
+FROM node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH \
     PUPPETEER_SKIP_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
@@ -8,7 +8,8 @@ ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       chromium fonts-noto fonts-noto-color-emoji ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
-RUN corepack enable && corepack prepare pnpm@10.34.9 --activate
+# Node 25+ no longer ships corepack: install pnpm with npm, at the version in package.json's packageManager.
+RUN npm install -g pnpm@10.34.9 && pnpm --version
 WORKDIR /app
 
 FROM base AS deps

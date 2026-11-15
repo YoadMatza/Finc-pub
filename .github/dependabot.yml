@@ -14,7 +14,7 @@ updates:
       # must stay on the major israeli-bank-scrapers uses (its Browser type is passed straight in)
       - dependency-name: puppeteer
         update-types: [version-update:semver-major]
-      # follows the Node major the worker image runs (24)
+      # follows the Node major the worker image runs (26); moves with it
       - dependency-name: "@types/node"
         update-types: [version-update:semver-major]
       # 6+ needs Vite 8; move both together
@@ -29,6 +29,6 @@ updates:
     schedule:
       interval: monthly
     ignore:
-      # Node 25+ no longer ships corepack, which the Dockerfile uses to get pnpm; move by hand
+      # Node majors move by hand, to the next even (LTS) release, together with CI and @types/node
       - dependency-name: node
         update-types: [version-update:semver-major]
