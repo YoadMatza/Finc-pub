@@ -10,6 +10,16 @@ updates:
       # one pull request for all minor and patch updates; majors come one by one
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # must stay on the major israeli-bank-scrapers uses (its Browser type is passed straight in)
+      - dependency-name: puppeteer
+        update-types: [version-update:semver-major]
+      # follows the Node major the worker image runs (24)
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
+      # 6+ needs Vite 8; move both together
+      - dependency-name: "@vitejs/plugin-react"
+        update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -18,3 +28,7 @@ updates:
     directories: [/, /deploy/caddy]
     schedule:
       interval: monthly
+    ignore:
+      # Node 25+ no longer ships corepack, which the Dockerfile uses to get pnpm; move by hand
+      - dependency-name: node
+        update-types: [version-update:semver-major]
