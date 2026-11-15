@@ -17,6 +17,7 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
 - Dependencies: TypeScript 7, better-sqlite3 13 (ships its own binaries, so no C++ build tools are needed any more),
   react-router 8, @hono/node-server 2, and minor updates of hono, @inquirer/prompts and @simplewebauthn/server.
 - CI actions: checkout 7, setup-node 7, pnpm/action-setup 6.
+- The hub builds with Vite 8 and @vitejs/plugin-react 6.
 - The worker image runs Node 26 and installs pnpm with npm (Node 25+ has no corepack). CI tests Node 24 and 26.
 
 ### Fixed
