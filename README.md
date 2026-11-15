@@ -3,6 +3,7 @@
 Personal, single-user, self-hosted finance hub for Israeli bank and card accounts (an alternative to RiseUp).
 
 **New here?** Follow [docs/getting-started.md](docs/getting-started.md): build, configure, start, first sync and daily use, step by step.
+Every outside service, API and key finc can use, and what each one is sent: [docs/external-services.md](docs/external-services.md).
 Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? See [SECURITY.md](SECURITY.md).
 
 ## Layout
@@ -496,4 +497,4 @@ To restore from the NAS, copy a `.fincbak` file back to the backup folder (for e
 
 - Credentials and API keys: encrypted vault only (`data/vault.json`, Argon2id + XChaCha20-Poly1305). Never in git, logs or `.env`. Environment variables are never read for secrets; every `*_API_KEY` / `*_TOKEN` / `*_PASSWORD`-style variable is deleted from the process at startup so other projects' keys on this machine can never be used.
 - Raw bank data stays in `data/` (gitignored). `fixtures/` holds synthetic samples only.
-- Nothing is sent to any external service except: the RiseUp token to `input.riseup.co.il`, and (if you configured a model) merchant names, amounts and months to the provider you chose. The hub binds to 127.0.0.1 and is protected by a PIN; fonts and scripts are self-hosted, so opening it contacts nothing outside.
+- Nothing is sent to any outside service except what [docs/external-services.md](docs/external-services.md) lists: your login to your own banks, and, only if you turn them on, merchant names, amounts and dates to your chosen AI provider, alert text to Telegram, ticker symbols to Yahoo and Finnhub, a company's SEC number to SEC EDGAR, the RiseUp token for the import, and backup files to your own NAS. The hub binds to 127.0.0.1 and is protected by a PIN; fonts and scripts are self-hosted, so opening it contacts nothing outside.

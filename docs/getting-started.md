@@ -33,6 +33,9 @@ Supported sources today:
 | Telegram | — | only for alerts |
 | An OpenAI or Anthropic API key, or a local model | — | only for the chat and AI categorisation |
 
+Every outside service finc can use (banks, AI, Telegram, price and filing sources, DuckDNS, a NAS), with the account
+or key each one needs and exactly what it is sent, is listed in [external-services.md](external-services.md).
+
 Enable pnpm through Node's corepack (once):
 
 ```bash

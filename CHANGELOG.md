@@ -10,6 +10,7 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
 - Getting-started guide (`docs/getting-started.md`), CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, SUPPORT, issue and pull
   request templates, CI (build, typecheck, test) and Dependabot.
 - MIT license.
+- `docs/external-services.md`: every outside service, API and key, with what each one is sent.
 
 ### Changed
 - `docker-compose.yml` puts backups in `./backups` unless `FINC_BACKUP_HOST_DIR` is set.
