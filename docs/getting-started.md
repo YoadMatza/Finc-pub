@@ -69,7 +69,7 @@ pnpm test
 - All tests should pass. They use synthetic data only.
 
 The `finc` command line is started with `.\finc` from the repository folder (`finc.ps1` for PowerShell, `finc.cmd`
-for cmd). Check it works:
+for cmd; on Linux and macOS `./finc.sh`, see the end of this guide). Check it works:
 
 ```bash
 .\finc --help
@@ -603,14 +603,15 @@ The database schema migrates itself on start. Rebuild and reinstall the Android 
 
 ## Linux and Raspberry Pi
 
-Docker Compose is the same on Linux (amd64 or arm64). The `.\finc` launchers are Windows scripts; on Linux run the
-CLI inside the container:
+Docker Compose is the same on Linux (amd64 or arm64). Use **`./finc.sh`** wherever this guide says `.\finc`:
 
 ```bash
-docker compose exec -it worker node apps/worker/dist/cli.js unlock
+./finc.sh unlock
 ```
 
-(and the same with any other command in place of `unlock`). Use `cp .env.example .env` and `touch data/caddy.env`
+It works like the Windows launchers: while the worker container runs, commands run inside it (`docker compose
+exec`); `spike` and `FINC_HOST=1 ./finc.sh …` run on the host, which needs Node and `pnpm -r build`; `backup restore`
+refuses while the worker runs. Use `cp .env.example .env` and `touch data/caddy.env`
 instead of the Windows commands above. On a Raspberry Pi the first build compiles Caddy and installs Chromium for
 arm64; allow 10–20 minutes. Docker starts at boot there, so only the vault unlock is manual.
 

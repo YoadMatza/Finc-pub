@@ -25,7 +25,7 @@ pnpm test
 
 ## First-time setup
 
-`.\finc` is a launcher that needs only Node on the PATH (`finc.cmd` for cmd, `finc.ps1` for PowerShell). `pnpm finc …` does the same when pnpm is on your PATH. Rebuild with `pnpm -r build` after code changes.
+`.\finc` is a launcher that needs only Node on the PATH (`finc.cmd` for cmd, `finc.ps1` for PowerShell; `./finc.sh` on Linux and macOS). `pnpm finc …` does the same when pnpm is on your PATH. Rebuild with `pnpm -r build` after code changes.
 
 ```bash
 .\finc vault init                     # choose a master password (never stored)
@@ -418,7 +418,7 @@ profiles, so stop the worker first (`docker compose stop worker`); finc refuses 
 
 **Moving to the Raspberry Pi:** install Docker, copy the repository and the whole `data/` folder (vault, DB, `caddy.env`,
 `apk/`), forward the router port to the Pi instead of the PC, run `docker compose up -d --build` (the first build compiles
-Caddy and installs Chromium for arm64, allow 10–20 minutes), then `./finc unlock`. Docker starts at boot there, so finc is
+Caddy and installs Chromium for arm64, allow 10–20 minutes), then `./finc.sh unlock`. Docker starts at boot there, so finc is
 up without anyone logging in; only the vault unlock remains manual, by design.
 
 Schedule: `FINC_SYNC_TIMES` (default `06:00,18:00`, Asia/Jerusalem) with up to `FINC_SYNC_JITTER_MIN` (30) minutes of jitter.

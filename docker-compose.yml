@@ -3,7 +3,7 @@
 #
 #   docker compose up -d --build       # first time and after code changes
 #   (needs FINC_PUBLIC_HOST and FINC_DUCKDNS_DOMAIN in .env, see .env.example)
-#   .\finc unlock  /  ./finc unlock    # after every worker start: the vault opens with the master password
+#   .\finc unlock  /  ./finc.sh unlock # after every worker start: the vault opens with the master password
 #
 # Secrets: data/vault.json (finc's vault) and data/caddy.env (DUCKDNS_TOKEN=... for Caddy and the updater).
 # Headful bank logins (finc spike …) run on a machine with a screen, outside the containers, on the same data/.
