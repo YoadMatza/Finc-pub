@@ -1,0 +1,9 @@
+{
+  "appId": "il.finc.app",
+  "appName": "finc",
+  "webDir": "dist",
+  "loggingBehavior": "none",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false, "backgroundColor": "#0f1115" },
+  "plugins": { "SecureStorage": { "sync": false }, "CapacitorHttp": { "enabled": false } }
+}

@@ -1,0 +1,49 @@
+# --- secrets & local state: never commit ---
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+vault.bin
+*.vault
+browser-profiles/
+profiles/
+screenshots/
+# real exports / imports / scraper dumps (financial data)
+imports/
+!fixtures/imports/
+exports/
+dumps/
+*.xlsx
+*.xls
+*.csv
+!fixtures/**/*.csv
+!fixtures/**/*.xlsx
+
+# --- build / deps ---
+node_modules/
+dist/
+build/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# --- logs / os / editor ---
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+
+# --- the owner's working notes (finances, setup, security findings): never commit ---
+private/
+backups/

@@ -1,0 +1,159 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/heebo';
+
+@theme {
+  --font-sans: 'Heebo Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --color-bg: #0f1115;
+  --color-surface: #171a21;
+  --color-surface-2: #1e222b;
+  --color-border: #262b36;
+  --color-text: #e6e8ee;
+  --color-muted: #8b93a7;
+  --color-accent: #2dd4bf;
+  --color-accent-dim: #134e4a;
+  --color-pos: #34d399;
+  --color-neg: #f87171;
+  --color-warn: #fbbf24;
+  --color-pending: #6b7280;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum' 1;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.4;
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.chip-on {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.btn:hover {
+  background: #262b36;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #06201d;
+  font-weight: 600;
+}
+.btn-primary:hover {
+  background: #5eead4;
+}
+/* irreversible actions (Settings → Lock everything) */
+.btn-danger {
+  background: color-mix(in srgb, var(--color-neg) 14%, transparent);
+  border-color: color-mix(in srgb, var(--color-neg) 55%, transparent);
+  color: var(--color-neg);
+  font-weight: 600;
+}
+.btn-danger:hover {
+  background: color-mix(in srgb, var(--color-neg) 24%, transparent);
+}
+.btn-sm {
+  padding: 0.25rem 0.6rem;
+  font-size: 13px;
+  border-radius: 8px;
+}
+
+.input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 15px;
+  outline: none;
+}
+.input:focus {
+  border-color: var(--color-accent);
+}
+
+.row-link {
+  cursor: pointer;
+}
+.row-link:hover {
+  background: var(--color-surface-2);
+}
+
+.bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-border);
+  overflow: hidden;
+}
+.bar > div {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.struck {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+@media (max-width: 767px) {
+  body {
+    font-size: 14px;
+  }
+}

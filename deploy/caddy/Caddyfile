@@ -1,0 +1,99 @@
+# Caddy in front of the finc worker, both in Docker Compose (see docker-compose.yml).
+#
+# - HTTPS for {$FINC_PUBLIC_HOST} on {$FINC_PUBLIC_PORT} with a Let's Encrypt certificate obtained by the DNS-01
+#   challenge through DuckDNS, so only that one TCP port is forwarded on the router; port 80 stays closed.
+# - DUCKDNS_TOKEN comes from data/caddy.env (compose env_file); finc never reads it.
+# - reverse_proxy sets X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host; the worker trusts them from
+#   Caddy's fixed address on the edge network only (FINC_TRUSTED_PROXIES in docker-compose.yml), and still
+#   accepts the PIN only from trusted client addresses, never from the internet. The Host header passes through
+#   unchanged ({$FINC_PUBLIC_HOST}:{$FINC_PUBLIC_PORT}); the worker refuses any name it does not serve.
+{
+	admin off
+	auto_https disable_redirects
+	# A client gets 10 s for its headers and 30 s for the whole request, so slow senders cannot hold connections open
+	# (security research P2-12). No write timeout: the 38 MB APK download on a slow phone line must finish.
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 2m
+		}
+	}
+}
+
+{$FINC_PUBLIC_HOST}:{$FINC_PUBLIC_PORT} {
+	tls {
+		# The Android app pins this key (security research P1-10): renewals must keep it, not make a new one.
+		# A backup key is pinned too; recovery steps are in README.md ("Phone pinning").
+		reuse_private_keys
+		key_type p256
+		# Let's Encrypt only: a fallback CA (ZeroSSL) would keep its certificate under another storage path with a NEW key.
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			dns duckdns {env.DUCKDNS_TOKEN}
+			resolvers 1.1.1.1 8.8.8.8
+		}
+	}
+	# Access log (security research P1-08): JSON, kept in data/logs/caddy across container rebuilds, rolled at 10 MB,
+	# 10 files, 30 days. No Authorization, Cookie or Referer header, no pairing code (/pair?code=) and no search text (?q=). Behind Docker
+	# Desktop every outside client shows the same gateway address (README); times, paths, status and agents still count.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format filter {
+			request>uri query {
+				delete code
+				delete q
+			}
+			request>headers>Cookie delete
+			request>headers>Referer delete
+			request>headers>Authorization delete
+		}
+	}
+	# No request body above 256 KiB reaches the worker (P2-12: one huge body could exhaust its memory; the worker
+	# enforces the same limits itself). The chat sends the whole conversation, so it alone gets 1 MiB.
+	@chat path /api/chat
+	@notchat not path /api/chat
+	request_body @chat {
+		max_size 1MiB
+	}
+	request_body @notchat {
+		max_size 256KiB
+	}
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# The signed Android build (data/apk/finc.apk) so the phone can install updates from its browser.
+	handle /finc.apk {
+		root * /srv/apk
+		header Content-Type application/vnd.android.package-archive
+		header Content-Disposition "attachment; filename=finc.apk"
+		file_server
+	}
+	# Security audit 2026-11-09 (C1, C2): the PIN flow and the control endpoints never face the internet.
+	# Anything that reaches this site came from outside (Docker Desktop hides the real client address), so
+	# the PIN login/setup, pairing-code creation and the worker's control port answer 404 here; the phone
+	# redeems a pairing code through /api/devices/pair, which stays open. Making a passkey enrolment link is
+	# home-only too; registering and signing in with a passkey (/api/auth/passkey/*) stay open. Everything
+	# proxied is stamped X-Finc-Edge: public, and the worker treats such requests as untrusted whatever address
+	# they carry.
+	@private path /api/auth/login /api/auth/setup /api/devices/pairings /api/auth/passkey/enroll-code /health /runs /unlock /sync /lock
+	handle @private {
+		respond 404
+	}
+	handle {
+		reverse_proxy worker:7733 {
+			header_up X-Finc-Edge public
+			# drop an idle connection to the worker before the worker's own 5 s keep-alive closes it, so a POST is
+			# never sent on a connection that is closing (Caddy does not retry those; review of P2-12)
+			transport http {
+				keepalive 4s
+			}
+		}
+	}
+}

@@ -1,0 +1,1 @@
+ALTER TABLE `device` ADD `revoked_reason` text;

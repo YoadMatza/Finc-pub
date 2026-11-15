@@ -1,0 +1,7 @@
+TEST FIXTURES ONLY (tlswatch.test.ts). Not a secret, not used anywhere else.
+
+ca.crt    a throwaway self-signed CA (its private key was deleted right after signing)
+leaf.crt  a leaf for finc-example.test, signed by that CA, valid until 2046
+leaf.key  the leaf's private key, so the test can run a local TLS server
+
+Generated 2026-11-11 with openssl (EC P-256). Never trust ca.crt outside the tests.

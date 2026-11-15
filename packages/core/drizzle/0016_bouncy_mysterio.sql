@@ -1,0 +1,1 @@
+ALTER TABLE `transaction` ADD `income_kind_override` text;

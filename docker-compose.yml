@@ -1,0 +1,152 @@
+# finc, the whole deployment: the worker (hub + API + scheduler + bank connectors), Caddy (HTTPS on the
+# public port, certificate via DuckDNS) and a tiny DuckDNS updater. Same file on the PC and on a Raspberry Pi.
+#
+#   docker compose up -d --build       # first time and after code changes
+#   (needs FINC_PUBLIC_HOST and FINC_DUCKDNS_DOMAIN in .env, see .env.example)
+#   .\finc unlock  /  ./finc unlock    # after every worker start: the vault opens with the master password
+#
+# Secrets: data/vault.json (finc's vault) and data/caddy.env (DUCKDNS_TOKEN=... for Caddy and the updater).
+# Headful bank logins (finc spike …) run on a machine with a screen, outside the containers, on the same data/.
+# Container logs: capped so they cannot fill the disk (P1-08). They still go when a container is recreated; what
+# matters for security is in finc's security log (database) and Caddy's access log (data/logs/caddy).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  worker:
+    build: .
+    image: finc-worker:local
+    container_name: finc-worker
+    restart: unless-stopped
+    logging: *logging
+    # Memory caps (P2-12): a runaway container cannot take the PC down. The worker needs room for the bank
+    # scraper's Chromium (about 0.4 GB idle).
+    mem_limit: 2560m
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FINC_DATA_DIR: /data
+      FINC_PORT: "7733"
+      FINC_BIND: "0.0.0.0"
+      # X-Forwarded-* headers are believed only from Caddy's fixed address on the edge network (P1-07), not from any
+      # private peer: the PC's browser arrives as the network's gateway and must not choose its own client address.
+      FINC_TRUSTED_PROXIES: 172.30.73.10
+      # The worker answers only to these names plus localhost/127.0.0.1 (DNS rebinding, P1-06/P1-07); Caddy keeps the
+      # public Host. More names (comma list): FINC_ALLOWED_HOSTS in .env.
+      FINC_PUBLIC_HOST: ${FINC_PUBLIC_HOST:?set FINC_PUBLIC_HOST in .env (see .env.example)}
+      FINC_ALLOWED_HOSTS: ${FINC_ALLOWED_HOSTS:-}
+      # The TLS key watchdog (P1-10): checks every 6 h that Caddy still serves a key the Android app pins and
+      # alarms through the alarm bot if not. Pins: base64 SHA-256 of the public key, comma list, in .env.
+      FINC_TLS_PINS: ${FINC_TLS_PINS:-}
+      FINC_TLS_CHECK_HOST: caddy
+      FINC_PUBLIC_PORT: ${FINC_PUBLIC_PORT:-7443}
+      # Stock insights: SEC EDGAR requires a contact e-mail in every request's User-Agent (only SEC sees it).
+      FINC_SEC_CONTACT: ${FINC_SEC_CONTACT:-}
+      # Nightly encrypted backups (03:40 local, FINC_BACKUP_TIME) go to the /backup mount below.
+      FINC_BACKUP_DIR: /backup
+      TZ: ${TZ:-Asia/Jerusalem}
+    # Control port (health / unlock / the CLI) reachable only from this machine; the phone comes through Caddy.
+    ports:
+      - "127.0.0.1:7733:7733"
+    volumes:
+      - ./data:/data
+      # The APK the phone downloads (served by Caddy) is read-only to the worker: a compromised worker cannot
+      # swap in a trojaned app (security research P0-05).
+      - ./data/apk:/data/apk:ro
+      # Bank browser profiles live in a Docker volume, not on the Windows share: there Chromium's private files (the
+      # cookie store) became unreadable to the worker itself, so every sync was a "new device" and FIBI's login
+      # intermittently ignored the button (2026-11-11/12). Copied from data/browser-profiles on 2026-11-12.
+      - browser_profiles:/data/browser-profiles
+      # Put backups on ANOTHER physical disk than data/ (FINC_BACKUP_HOST_DIR in .env): one dead disk must not take
+      # the database and its backups together. The ./backups default is only a fallback.
+      - ${FINC_BACKUP_HOST_DIR:-./backups}:/backup
+    # Chromium needs a bigger /dev/shm than Docker's 64MB default.
+    shm_size: "1gb"
+    # No Linux capabilities and no privilege gain for anything in the container, Chromium included (P0-06).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+
+  caddy:
+    build: ./deploy/caddy
+    image: finc-caddy:local
+    container_name: finc-caddy
+    restart: unless-stopped
+    logging: *logging
+    mem_limit: 256m
+    depends_on:
+      - worker
+    env_file:
+      - path: ./data/caddy.env
+        required: true
+    environment:
+      FINC_PUBLIC_HOST: ${FINC_PUBLIC_HOST:?set FINC_PUBLIC_HOST in .env (see .env.example)}
+      FINC_PUBLIC_PORT: ${FINC_PUBLIC_PORT:-7443}
+    ports:
+      - "${FINC_PUBLIC_PORT:-7443}:${FINC_PUBLIC_PORT:-7443}"
+      - "${FINC_PUBLIC_PORT:-7443}:${FINC_PUBLIC_PORT:-7443}/udp"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/apk:/srv/apk:ro
+      - ./data/logs/caddy:/var/log/caddy
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      edge:
+        # the one address the worker believes X-Forwarded-For from (FINC_TRUSTED_PROXIES above)
+        ipv4_address: 172.30.73.10
+
+  # Keeps the DuckDNS name pointing at this connection's public IP (every 5 minutes). On its own network: it cannot
+  # reach worker:7733 (P1-07). Pinned by digest, read-only, no capabilities, runs as curl_user.
+  # Docker Desktop caveat (accepted, documented in STATUS): ANY container on this PC (other compose projects too) and
+  # any WSL process can still reach the published 127.0.0.1:7733 via host.docker.internal (and, measured 2026-11-10,
+  # the worker's edge IP across networks: Docker Desktop does not isolate them; Host 172.30.73.2 gets 421), and the worker cannot tell
+  # that from the PC's browser (both arrive as the gateway). Such a caller can try PINs (escalating lock, alerts),
+  # nothing more without a session or the control token. On a Linux host (the Pi) containers cannot reach it.
+  duckdns:
+    image: curlimages/curl:8.17.0@sha256:935d9100e9ba842cdb060de42472c7ca90cfe9a7c96e4dacb55e79e560b3ff40
+    container_name: finc-duckdns
+    restart: unless-stopped
+    logging: *logging
+    mem_limit: 32m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - duckdns
+    env_file:
+      - path: ./data/caddy.env
+        required: true
+    environment:
+      FINC_DUCKDNS_DOMAIN: ${FINC_DUCKDNS_DOMAIN:?set FINC_DUCKDNS_DOMAIN in .env (see .env.example)}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          curl -fsS "https://www.duckdns.org/update?domains=$${FINC_DUCKDNS_DOMAIN}&token=$${DUCKDNS_TOKEN}&ip=" || echo "duckdns update failed"
+          echo
+          sleep 300
+        done
+
+networks:
+  # Caddy and the worker only. A fixed subnet so Caddy's address is known.
+  edge:
+    ipam:
+      config:
+        - subnet: 172.30.73.0/24
+  # The DuckDNS updater alone: internet, nothing of finc's.
+  duckdns: {}
+
+volumes:
+  caddy_data:
+  caddy_config:
+  browser_profiles:

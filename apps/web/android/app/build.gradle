@@ -1,0 +1,168 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "il.finc.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    // Release signing from android/keystore.properties (gitignored): storeFile, storePassword, keyAlias, keyPassword.
+    // Without that file the release build is unsigned, which Android refuses to install.
+    def keystoreProps = new Properties()
+    def keystoreFile = rootProject.file('keystore.properties')
+    if (keystoreFile.exists()) keystoreFile.withInputStream { keystoreProps.load(it) }
+    // The hub's public host name for the pairing-link intent filter (AndroidManifest.xml, ${fincPublicHost}).
+    // Order: fincPublicHost= in keystore.properties, then -PfincPublicHost= / gradle.properties, then a dummy.
+    def fincPublicHost = keystoreProps['fincPublicHost'] ?: (project.findProperty('fincPublicHost') ?: 'finc.invalid')
+    def fincReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
+    if (fincPublicHost == 'finc.invalid' && fincReleaseTask) {
+        throw new GradleException('fincPublicHost is not set: add fincPublicHost=<your hub host> to android/keystore.properties')
+    }
+    def fincHost = fincPublicHost.toString().trim().toLowerCase(Locale.ROOT)
+    if (!(fincHost ==~ /[a-z0-9]([a-z0-9.-]*[a-z0-9])?/)) {
+        throw new GradleException("fincPublicHost must be a bare host name (no scheme, port or path)")
+    }
+    // Security research P1-10: the hub's public-key pins (base64 SHA-256 of the SubjectPublicKeyInfo), comma-separated:
+    // the live key and a backup key. Order: -PfincPinsOverride= (for a deliberate test build, wins over everything,
+    // may be empty), then fincPins= in keystore.properties, then -PfincPins= / gradle.properties.
+    def fincPinsRaw = project.hasProperty('fincPinsOverride') ? project.property('fincPinsOverride')
+        : (keystoreProps['fincPins'] ?: (project.findProperty('fincPins') ?: ''))
+    def fincPins = fincPinsRaw.toString().split(',').collect { it.trim() }.findAll { it }.unique()
+    def fincBadPins = fincPins.findAll { p ->
+        if (!(p ==~ /[A-Za-z0-9+\/]{43}=/)) return true
+        try { return Base64.decoder.decode(p).length != 32 } catch (Exception ignored) { return true }
+    }
+    if (!fincBadPins.isEmpty()) {
+        throw new GradleException("fincPins: ${fincBadPins.size()} pin(s) are not base64 SHA-256 (44 characters, 32 bytes): " + fincBadPins.collect { it.take(6) + '...' }.join(', '))
+    }
+    if (fincReleaseTask && fincPins.size() < 2) {
+        throw new GradleException("fincPins: a release build needs at least 2 distinct pins (the live key and a backup), found ${fincPins.size()}. Add fincPins=<live>,<backup> to android/keystore.properties")
+    }
+    if (fincPins.isEmpty()) {
+        logger.warn('finc: fincPins is not set; this (debug) build gets a network security config WITHOUT a pin-set')
+    }
+    project.ext.fincNet = [host: fincHost, pins: fincPins]
+    buildFeatures {
+        buildConfig = true
+    }
+    defaultConfig {
+        manifestPlaceholders = [fincPublicHost: fincHost]
+        // the one hub this APK talks to; FincVaultPlugin refuses any other host in a release build (P1-10)
+        buildConfigField "String", "FINC_PUBLIC_HOST", "\"${fincHost}\""
+        applicationId "il.finc.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 32
+        versionName "0.8.13"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (keystoreFile.exists()) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (keystoreFile.exists()) signingConfig signingConfigs.release
+        }
+    }
+}
+
+/**
+ * Security research P1-10: res/xml/network_security_config.xml, generated per variant under build/ (never in src/
+ * or git) from fincPublicHost and fincPins. Only Android's own network stack (HttpsURLConnection, which
+ * CapacitorHttp uses) applies it; the WebView's Chromium networking does not, which is why every call to the hub
+ * goes through CapacitorHttp (capacitor.config.json).
+ * - base-config: no cleartext, system CAs only (no user-installed CAs);
+ * - the hub's host (exactly, no subdomains): no cleartext, system CAs, and a pin-set with every pin, no expiration,
+ *   so a certificate for the name from someone else's key (a stolen DuckDNS token) is refused.
+ */
+abstract class FincNetworkSecurityConfigTask extends DefaultTask {
+    @Input abstract Property<String> getHost()
+    @Input abstract ListProperty<String> getPins()
+    @Input abstract Property<Boolean> getRequirePins()
+    @OutputDirectory abstract DirectoryProperty getOutputDir()
+
+    @TaskAction
+    void generate() {
+        def pinList = pins.get()
+        if (requirePins.get() && pinList.size() < 2) {
+            throw new GradleException("fincPins: the ${name} variant is a release build and needs at least 2 pins, found ${pinList.size()}")
+        }
+        def sb = new StringBuilder()
+        sb << '<?xml version="1.0" encoding="utf-8"?>\n'
+        sb << '<!-- Generated by app/build.gradle (security research P1-10) from fincPublicHost and fincPins. Do not edit. -->\n'
+        sb << '<network-security-config>\n'
+        sb << '    <base-config cleartextTrafficPermitted="false">\n'
+        sb << '        <trust-anchors>\n'
+        sb << '            <certificates src="system" />\n'
+        sb << '        </trust-anchors>\n'
+        sb << '    </base-config>\n'
+        sb << '    <domain-config cleartextTrafficPermitted="false">\n'
+        sb << "        <domain includeSubdomains=\"false\">${host.get()}</domain>\n"
+        sb << '        <trust-anchors>\n'
+        sb << '            <certificates src="system" />\n'
+        sb << '        </trust-anchors>\n'
+        if (!pinList.isEmpty()) {
+            sb << '        <pin-set>\n'
+            pinList.each { sb << "            <pin digest=\"SHA-256\">${it}</pin>\n" }
+            sb << '        </pin-set>\n'
+        }
+        sb << '    </domain-config>\n'
+        sb << '</network-security-config>\n'
+        def dir = new File(outputDir.get().asFile, 'xml')
+        dir.mkdirs()
+        new File(dir, 'network_security_config.xml').setText(sb.toString(), 'UTF-8')
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        def gen = tasks.register("generate${variant.name.capitalize()}FincNetworkSecurityConfig", FincNetworkSecurityConfigTask) {
+            host.set(project.ext.fincNet.host as String)
+            pins.set(project.ext.fincNet.pins as List<String>)
+            requirePins.set(variant.buildType == 'release')
+        }
+        variant.sources.res.addGeneratedSourceDirectory(gen, { it.outputDir })
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    // FincVault (P1-11): BiometricPrompt + CryptoObject. 1.1.0 is the newest stable; same version the biometric-auth plugin uses.
+    implementation "androidx.biometric:biometric:1.1.0"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
