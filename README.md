@@ -3,7 +3,7 @@
 Personal, single-user, self-hosted finance hub for Israeli bank and card accounts (an alternative to RiseUp).
 
 **New here?** Follow [docs/getting-started.md](docs/getting-started.md): build, configure, start, first sync and daily use, step by step.
-Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md).
+Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? See [SECURITY.md](SECURITY.md).
 
 ## Layout
 

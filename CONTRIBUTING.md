@@ -9,9 +9,8 @@ stricter than in most projects. Please read **Privacy and security rules** befor
   `finc health` and `finc --version`. **Never paste real transactions, balances, account or card numbers, IDs, bank
   page dumps or screenshots with real data.** Describe the shape instead ("a refund row with a negative amount and no
   memo"), or make up values.
-- **Security problems:** do **not** open a public issue. Use GitHub's private vulnerability reporting (the repository's
-  Security tab → *Report a vulnerability*). Say what an attacker needs (network position, a paired device, access to
-  the PC) and what they get.
+- **Security problems:** do **not** open a public issue. Follow [SECURITY.md](SECURITY.md): GitHub's private vulnerability
+  reporting (the repository's Security tab → *Report a vulnerability*).
 - **A new bank or card:** connectors build on [israeli-bank-scrapers](https://github.com/eshaham/israeli-bank-scrapers).
   Open an issue first: we need to agree on the data shape, and on how you will test it without real data.
 - **Translations and wording:** the app is Hebrew and English. Both must say the same thing.
