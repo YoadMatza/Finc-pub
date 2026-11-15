@@ -1,0 +1,72 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Never paste real financial data**: no transactions, balances, account or card numbers
+        (not even the last 4 digits), ID numbers, bank page dumps, tokens, or screenshots showing any of these.
+        Describe the shape instead, or replace every value with a made-up one.
+
+        Security problems go to private reporting (Security tab), not here. See SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Bank or card sync
+        - Statement or RiseUp import
+        - Numbers (month, categories, recurring, refunds)
+        - Hub (web app)
+        - Android app
+        - Chat / AI
+        - Alerts (Telegram)
+        - Backups
+        - Docker / Caddy / remote access
+        - CLI
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: How you run finc
+      options:
+        - Docker on Windows (Docker Desktop)
+        - Docker on Linux / Raspberry Pi
+        - Directly with `finc worker`
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `finc --version` and the commit (`git rev-parse --short HEAD`).
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: |
+        `finc health`, an error message, or log lines. Check them first: remove account names and numbers, amounts,
+        host names and anything else personal.
+      render: text

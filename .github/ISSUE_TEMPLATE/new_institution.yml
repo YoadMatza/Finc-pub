@@ -1,0 +1,47 @@
+name: Support a new bank or card
+description: Ask for, or offer to build, a connector for another Israeli bank, card company or data source.
+labels: [connector]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Connectors build on [israeli-bank-scrapers](https://github.com/eshaham/israeli-bank-scrapers). Before a
+        connector can be merged we need to agree on the data shape and on how it is tested **without real data**.
+
+        **Never attach real statements, page dumps or screenshots with real data.**
+  - type: input
+    id: institution
+    attributes:
+      label: Bank, card company or source
+      placeholder: e.g. Bank Leumi, Cal, a pension fund
+    validations:
+      required: true
+  - type: dropdown
+    id: scraper
+    attributes:
+      label: Does israeli-bank-scrapers support it?
+      options:
+        - "Yes"
+        - "No"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: accounts
+    attributes:
+      label: Account types
+      description: Checking, credit cards, securities, foreign currency, savings, loans...
+  - type: textarea
+    id: shape
+    attributes:
+      label: What is special about its data
+      description: |
+        For example: how card bills appear in the bank account, instalments, pending rows, refunds, foreign currency.
+        Describe it in words, or with made-up rows.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I have an account there and can test a connector against it myself.
+        - label: I would like to build the connector (see CONTRIBUTING.md).

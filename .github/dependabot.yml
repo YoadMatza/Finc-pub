@@ -1,0 +1,20 @@
+# Dependency update pull requests. Versions are pinned exactly (.npmrc save-exact), so these are the way to move them.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      # one pull request for all minor and patch updates; majors come one by one
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: docker
+    directories: [/, /deploy/caddy]
+    schedule:
+      interval: monthly

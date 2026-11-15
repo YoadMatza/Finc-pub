@@ -1,7 +1,8 @@
 # Contributing to finc
 
 Thanks for helping. finc handles people's bank logins and their whole financial history, so a few rules here are
-stricter than in most projects. Please read **Privacy and security rules** before your first change.
+stricter than in most projects. Please read **Privacy and security rules** before your first change, and follow our
+[Code of Conduct](CODE_OF_CONDUCT.md) everywhere in the project.
 
 ## Ways to help
 

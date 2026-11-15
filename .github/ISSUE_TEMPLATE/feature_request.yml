@@ -1,0 +1,34 @@
+name: Feature request
+description: An idea for finc.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        finc is a single-user, self-hosted, privacy-first finance hub. Ideas that send more data off the machine, or
+        that tell the user what to do with their money (buy, sell, hold), are out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to understand or do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What you would like finc to show or do. A sketch with made-up numbers helps.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Data and privacy
+      description: Does this need new data, an outside service, or new permissions? Leave empty if not.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to work on this myself (see CONTRIBUTING.md).
