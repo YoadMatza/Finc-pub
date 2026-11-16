@@ -38,8 +38,11 @@ if [ ! -f "$cli" ]; then
   echo 'finc is not built yet. Run: pnpm -r build' >&2
   exit 1
 fi
-if [ -z "${FINC_HOST:-}" ] && [ "$#" -gt 0 ] && [ "$1" != "spike" ]; then
-  echo 'note: the Docker worker is not running; using the database directly from this machine.' >&2
+# a note only for real commands (not --help/--version): no Docker worker, so finc runs here, talking to a worker
+# started on this machine when there is one (FINC_HOST=1 hides the note)
+case "${1:-}" in -h|--help|-V|--version|help) quiet=1 ;; *) quiet=0 ;; esac
+if [ -z "${FINC_HOST:-}" ] && [ "$#" -gt 0 ] && [ "$1" != "spike" ] && [ "$quiet" = 0 ]; then
+  echo 'note: no Docker worker is running; finc runs on this machine.' >&2
 fi
 # A host run always works on this project's data folder, whatever the current directory.
 export FINC_DATA_DIR="${FINC_DATA_DIR:-$root/data}"

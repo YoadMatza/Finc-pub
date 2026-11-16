@@ -31,8 +31,8 @@ if (-not (Test-Path $cli)) {
   Write-Error 'finc is not built yet. Run: pnpm -r build'
   exit 1
 }
-if (-not $env:FINC_HOST -and $args.Count -gt 0 -and $hostOnly -notcontains $args[0]) {
-  Write-Host 'note: the Docker worker is not running; using the database directly from this machine.' -ForegroundColor DarkGray
+if (-not $env:FINC_HOST -and $args.Count -gt 0 -and $hostOnly -notcontains $args[0] -and @('-h', '--help', '-V', '--version', 'help') -notcontains $args[0]) {
+  Write-Host 'note: no Docker worker is running; finc runs on this machine.' -ForegroundColor DarkGray
 }
 # A host run always works on this project's data folder, whatever the current directory (a restore started
 # from another folder must not land in <cwd>\data).
