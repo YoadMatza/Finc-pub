@@ -6,7 +6,7 @@ import { type Db, INSTITUTIONS, SCRAPED_INSTITUTIONS, type Vault, finishRunError
 import { Cron } from 'croner';
 import { runDispatch, securityAlert, startAlertTicker, telegramOtp } from './alerts.js';
 import { type BackupDeps, BackupJob, BackupLockedError, type BackupOutcome } from './backup.js';
-import { pruneDebugFiles } from './retention.js';
+import { pruneDebugFiles, pruneOldData } from './retention.js';
 import { sweepIdleDevices } from './lockdown.js';
 import { type ScrapeRunResult, type ScrapedInstitutionId, runScrape } from './connectors/scrape.js';
 import { log } from './logger.js';
@@ -137,7 +137,11 @@ export class Scheduler {
     this.publishNextRun();
     this.ticker = startAlertTicker(this.db, this.getVault, this.config.timezone);
     pruneDebugFiles();
-    this.retention = new Cron('20 3 * * *', { timezone: this.config.timezone, name: 'retention' }, () => void pruneDebugFiles());
+    pruneOldData(this.db);
+    this.retention = new Cron('20 3 * * *', { timezone: this.config.timezone, name: 'retention' }, () => {
+      pruneDebugFiles();
+      pruneOldData(this.db);
+    });
     // P1-09: idle device tokens are revoked at start and daily, not only on their next use
     sweepIdleDevices(this.db, this.getVault());
     this.deviceSweep = new Cron('25 3 * * *', { timezone: this.config.timezone, name: 'device-expiry' }, () => void sweepIdleDevices(this.db, this.getVault()));

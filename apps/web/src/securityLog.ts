@@ -67,6 +67,7 @@ export const KNOWN_KINDS = [
   'backup.offsite_removed',
   'backup.offsite_hostkey_changed',
   'backup.restored',
+  'data.retention',
 ] as const;
 export type KnownKind = (typeof KNOWN_KINDS)[number];
 /** 'auth.pin_ok' → 'sec_k_auth_pin_ok' (type-level), so a kind without an i18n entry fails the typecheck. */

@@ -4,13 +4,13 @@ import path from 'node:path';
 /** Root for everything finc writes: DB, vault, browser profiles, imports. Gitignored. */
 export function dataDir(): string {
   const dir = process.env.FINC_DATA_DIR?.trim() || path.resolve(process.cwd(), 'data');
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 }); // owner only on Linux and the Pi (security research P2-10)
   return path.resolve(dir);
 }
 
 function sub(name: string): string {
   const p = path.join(dataDir(), name);
-  mkdirSync(p, { recursive: true });
+  mkdirSync(p, { recursive: true, mode: 0o700 });
   return p;
 }
 

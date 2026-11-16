@@ -71,7 +71,7 @@ describe('filters', () => {
     vault: ['vault.unlock_ok', 'vault.unlock_failed', 'vault.lock'],
     lockdown: ['lockdown.run', 'lockdown.requested', 'lockdown.wrong_code', 'lockdown.blocked'],
   } as const;
-  const other = ['settings.changed', 'alerts.settings_changed', 'alerts.chat_code_created', 'alerts.chat_bound', 'alarm.set_up', 'alarm.removed', 'tls.state_changed', 'worker.started', 'worker.db_owner_conflict', 'backup.failed', 'backup.shrank', 'backup.stale', 'backup.offsite_failed', 'backup.offsite_stale', 'sync.waiting_for_unlock', 'backup.offsite_set', 'backup.offsite_removed', 'backup.offsite_hostkey_changed', 'backup.restored', 'http.body_too_large'];
+  const other = ['settings.changed', 'alerts.settings_changed', 'alerts.chat_code_created', 'alerts.chat_bound', 'alarm.set_up', 'alarm.removed', 'tls.state_changed', 'worker.started', 'worker.db_owner_conflict', 'backup.failed', 'backup.shrank', 'backup.stale', 'backup.offsite_failed', 'backup.offsite_stale', 'sync.waiting_for_unlock', 'backup.offsite_set', 'backup.offsite_removed', 'backup.offsite_hostkey_changed', 'backup.restored', 'data.retention', 'http.body_too_large'];
   const kinds = [...KNOWN_KINDS];
   it('the known kinds are exactly the groups plus the other ones', () => {
     expect([...Object.values(groups).flat(), ...other].sort()).toEqual([...kinds].sort());
