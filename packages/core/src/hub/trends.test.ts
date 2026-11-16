@@ -5,6 +5,8 @@ import { runEngine } from '../engine/run.js';
 import { ingestBatch } from '../ingest/ingest.js';
 import type { NormalizedRow } from '../ingest/types.js';
 import { trendsOverview } from './trends.js';
+import { transactions } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
 
 const row = (date: string, amount: number, description: string): NormalizedRow => ({ externalAccountId: 'x', date, amount, description, status: 'completed', type: 'normal', identifier: `${description}${date}${amount}`, payload: {} });
 
@@ -25,6 +27,24 @@ function seed() {
 }
 
 describe('trends', () => {
+  it('money paid back to me is its own inflow in the Sankey, never income (fixes the 2026-11-12 known issue)', () => {
+    const db = seed();
+    const acc = db.select().from(transactions).get()!.accountId;
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: [row('2026-10-20', 20700, 'PAYBACK FROM A FRIEND')] });
+    runEngine(db);
+    const pb = db.select().from(transactions).where(eq(transactions.descriptionRaw, 'PAYBACK FROM A FRIEND')).get()!;
+    db.update(transactions).set({ kind: 'paid_back' }).where(eq(transactions.id, pb.id)).run();
+    const s = trendsOverview(db, { months: 12, today: '2026-11-09', sankeyMonth: '2026-10' }).sankey;
+    const pool = s.nodes.findIndex((n) => n.kind === 'pool');
+    const into = s.links.filter((l) => l.target === pool).map((l) => ({ kind: s.nodes[l.source]!.kind, v: l.value }));
+    expect(into.filter((x) => x.kind === 'paid_back')).toEqual([{ kind: 'paid_back', v: 20700 }]);
+    // income sources carry the salary only
+    expect(into.filter((x) => x.kind === 'income').reduce((a, x) => a + x.v, 0)).toBe(1400000);
+    // flow is conserved: everything in leaves as groups plus what is left
+    const out = s.links.filter((l) => l.source === pool).reduce((a, l) => a + l.value, 0);
+    expect(out).toBe(into.reduce((a, x) => a + x.v, 0));
+  });
+
   it('builds aligned monthly series, group series, a sankey and a year-over-year view', () => {
     const db = seed();
     const t = trendsOverview(db, { months: 12, today: '2026-11-09' });

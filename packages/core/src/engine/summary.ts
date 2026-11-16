@@ -37,7 +37,8 @@ export interface MonthSummary {
   expectedInstallments: ProjectedSlice[];
   byAccount: Array<{ accountId: number; displayName: string | null; type: string; income: number; out: number; count: number }>;
   /** non-excluded rows by category (refunds netted), biggest spend first; uncategorised rows under key null */
-  byCategory: Array<{ categoryId: number | null; key: string | null; nameHe: string | null; group: string | null; section: string | null; count: number; sum: number }>;
+  /** `paidBack`: the part of `sum` that is money paid back to the owner (kind paid_back), which nets spending, not income */
+  byCategory: Array<{ categoryId: number | null; key: string | null; nameHe: string | null; group: string | null; section: string | null; count: number; sum: number; paidBack: number }>;
   integrity: {
     bucketsSum: number;
     nonExcludedSum: number;
@@ -144,7 +145,7 @@ export function monthSummary(db: Db, month: string, view: View = 'purchase'): Mo
     integrity: { bucketsSum: 0, nonExcludedSum: 0, ok: false, unmatchedSettlementDebits: [], pendingCount: 0 },
   };
   const perAccount = new Map<number, { income: number; out: number; count: number }>();
-  const perCategory = new Map<number | null, { count: number; sum: number }>();
+  const perCategory = new Map<number | null, { count: number; sum: number; paidBack: number }>();
   const add = (b: Bucket, amount: number) => {
     b.count++;
     b.sum += amount;
@@ -160,9 +161,10 @@ export function monthSummary(db: Db, month: string, view: View = 'purchase'): Mo
     s.integrity.nonExcludedSum += t.amountIls;
     const pa = perAccount.get(t.accountId) ?? { income: 0, out: 0, count: 0 };
     pa.count++;
-    const pc = perCategory.get(t.categoryId) ?? { count: 0, sum: 0 };
+    const pc = perCategory.get(t.categoryId) ?? { count: 0, sum: 0, paidBack: 0 };
     pc.count++;
     pc.sum += amount;
+    if (t.kind === 'paid_back') pc.paidBack += amount;
     perCategory.set(t.categoryId, pc);
     if (bucket === 'income') {
       add(s.income, amount);

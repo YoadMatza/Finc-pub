@@ -426,7 +426,7 @@ export interface CategorySeries extends TrendSeries {
 }
 export interface SankeyNode {
   key: string;
-  kind: 'income' | 'pool' | 'group' | 'category' | 'left' | 'deficit';
+  kind: 'income' | 'paid_back' | 'pool' | 'group' | 'category' | 'left' | 'deficit';
   nameHe: string;
   nameEn: string;
 }

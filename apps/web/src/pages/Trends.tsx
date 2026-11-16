@@ -228,12 +228,15 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
   );
 }
 
+/** Money paid back to the owner flows in beside income but is not income: its own, quieter colour. */
+const PAID_BACK_COLOR = '#5eead4';
+
 /** Node rectangles with labels, since the default Sankey node has none. */
 function SankeyNodeShape(props: { x?: number; y?: number; width?: number; height?: number; index?: number; payload?: { name: string; value: number }; nodes: SankeyNode[]; lang: 'he' | 'en' }) {
   const { x = 0, y = 0, width = 0, height = 0, index = 0, payload, nodes } = props;
   const n = nodes[index];
-  const color = n?.kind === 'group' ? colorOf(n.key) : n?.kind === 'income' || n?.kind === 'pool' || n?.kind === 'left' ? '#34d399' : n?.kind === 'deficit' ? '#f87171' : '#8b93a7';
-  const left = n?.kind === 'income' || n?.kind === 'deficit';
+  const color = n?.kind === 'group' ? colorOf(n.key) : n?.kind === 'income' || n?.kind === 'pool' || n?.kind === 'left' ? '#34d399' : n?.kind === 'paid_back' ? PAID_BACK_COLOR : n?.kind === 'deficit' ? '#f87171' : '#8b93a7';
+  const left = n?.kind === 'income' || n?.kind === 'paid_back' || n?.kind === 'deficit';
   const full = payload?.name ?? '';
   const label = full.length > 18 ? `${full.slice(0, 17)}…` : full;
   const amount = payload ? money(payload.value, { decimals: 0 }) : '';
@@ -335,6 +338,7 @@ function FlowBreakdown({ s, groupName }: { s: TrendsOverview['sankey']; groupNam
   const outOf = s.links.filter((l) => l.source === pool).map((l) => ({ n: s.nodes[l.target]!, v: l.value }));
   const income = into.filter((x) => x.n.kind === 'income').sort((a, b) => b.v - a.v);
   const deficit = into.find((x) => x.n.kind === 'deficit');
+  const paidBack = into.find((x) => x.n.kind === 'paid_back');
   const groups = outOf.filter((x) => x.n.kind === 'group').sort((a, b) => b.v - a.v);
   const left = outOf.find((x) => x.n.kind === 'left');
   const total = into.reduce((a, x) => a + x.v, 0);
@@ -351,6 +355,7 @@ function FlowBreakdown({ s, groupName }: { s: TrendsOverview['sankey']; groupNam
     <div className="flex flex-col gap-1">
       <span className="text-xs text-muted uppercase tracking-wide">{t('trends_income')}</span>
       {income.map((x) => row(x.n.key, name(x.n), x.v, '#34d399'))}
+      {paidBack && row('paid_back', name(paidBack.n), paidBack.v, PAID_BACK_COLOR, true)}
       {deficit && row('deficit', name(deficit.n), deficit.v, '#f87171', true)}
       <div className="flex items-center justify-between py-2 mt-1 border-t border-b border-border text-sm">
         <span className="font-semibold">{t('trends_total_in')}</span>
@@ -388,7 +393,7 @@ function FlowVertical({ s, groupName }: { s: TrendsOverview['sankey']; groupName
   const outOf = s.links.filter((l) => l.source === pool).map((l) => ({ n: s.nodes[l.target]!, v: l.value }));
   const total = into.reduce((a, x) => a + x.v, 0) || 1;
   const name = (n: SankeyNode) => (n.kind === 'group' ? groupName(n.key) : lang === 'he' ? n.nameHe : n.nameEn);
-  const color = (n: SankeyNode) => (n.kind === 'group' ? colorOf(n.key) : n.kind === 'deficit' ? '#f87171' : '#34d399');
+  const color = (n: SankeyNode) => (n.kind === 'group' ? colorOf(n.key) : n.kind === 'deficit' ? '#f87171' : n.kind === 'paid_back' ? PAID_BACK_COLOR : '#34d399');
   // lay a row out from the right (Hebrew reads that way), biggest first
   const layout = (items: Array<{ n: SankeyNode; v: number }>) => {
     const sorted = [...items].sort((a, b) => b.v - a.v);

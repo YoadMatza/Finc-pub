@@ -41,7 +41,8 @@ export interface CategorySeries extends TrendSeries {
 
 export interface SankeyNode {
   key: string;
-  kind: 'income' | 'pool' | 'group' | 'category' | 'left' | 'deficit';
+  /** paid_back: money paid back to the owner for a shared expense; it flows in beside income but is not income */
+  kind: 'income' | 'paid_back' | 'pool' | 'group' | 'category' | 'left' | 'deficit';
   nameHe: string;
   nameEn: string;
 }
@@ -182,22 +183,31 @@ function buildSankey(s: MonthSummary, cats: Map<number, CategoryRow>): { nodes: 
   let incomeTotal = 0;
   let outTotal = 0;
   const byGroup = new Map<string, { section: string; total: number; cats: Array<{ cat: CategoryRow; sum: number }> }>();
+  // paid back to me nets spending everywhere else (Now, limit, forecast), so it is never drawn as income: one inflow of
+  // its own beside the income sources (fixes the Sankey showing a paid-back Bit as income, 2026-11-12)
+  let paidBack = 0;
   for (const c of s.byCategory) {
     const cat = c.categoryId === null ? UNCAT : (cats.get(c.categoryId) ?? UNCAT);
-    if (c.sum > 0) {
+    paidBack += c.paidBack;
+    const sum = c.sum - c.paidBack;
+    if (sum > 0) {
       if (cat.section !== 'income') continue; // a credit inside a spend category was netted already; skip the rest
       const i = node({ key: cat.key, kind: 'income', nameHe: cat.name_he, nameEn: cat.name_en });
-      links.push({ source: i, target: pool, value: c.sum });
-      incomeTotal += c.sum;
+      links.push({ source: i, target: pool, value: sum });
+      incomeTotal += sum;
       continue;
     }
-    if (c.sum === 0 || cat.section === 'income') continue;
+    if (sum === 0 || cat.section === 'income') continue;
     const g = byGroup.get(cat.group_key) ?? { section: cat.section, total: 0, cats: [] };
-    g.total += -c.sum;
-    g.cats.push({ cat, sum: -c.sum });
+    g.total += -sum;
+    g.cats.push({ cat, sum: -sum });
     byGroup.set(cat.group_key, g);
   }
   outTotal = [...byGroup.values()].reduce((a, g) => a + g.total, 0);
+  if (paidBack > 0) {
+    links.push({ source: node({ key: 'paid_back', kind: 'paid_back', nameHe: 'הוחזר לי', nameEn: 'Paid back to me' }), target: pool, value: paidBack });
+    incomeTotal += paidBack; // what flows into the pool; still not income
+  }
   // a category gets its own ribbon only when it is visible: at least 3% of the month's spend, four per group at most
   const minShown = outTotal * 0.03;
   for (const [key, g] of [...byGroup.entries()].sort((a, b) => b[1].total - a[1].total)) {
