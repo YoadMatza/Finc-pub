@@ -171,6 +171,9 @@ reading with missing data says "not available", never a guess.
 Updated order agreed 2026-11-11: steps 3 → 6 next; step 2 (Telegram for rules) can slot in any time.
 
 ## Decisions for the owner
+
+**Decided 2026-11-16:** parts A and B are built; next C (news and an AI summary) and E (the signals board); D (Reddit
+attention) is dropped.
 1. Start with rules only (Part A), or both together.
 2. Telegram for rules: built in step 2 as planned, or not at all.
 3. Which example rules to suggest (all start off), or none.

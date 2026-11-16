@@ -71,6 +71,9 @@ Every figure shows its source (bank page / computed / live price) and date.
 3. The view.
 
 ## 3. Decisions for the owner
+
+**Decided 2026-11-16:** yes to all three with the defaults: both bank pages join the sync, fee 0 when the trades page
+shows none, the S&P 500 comparison is in.
 1. OK to add the two bank pages to the sync (one explore run first, during a normal sync).
 2. Fee assumption when the trades page shows no fee: 0, or a rate you give.
 3. Include the "same money in the S&P 500" comparison (yes by default).
