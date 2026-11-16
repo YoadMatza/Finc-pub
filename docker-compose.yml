@@ -89,9 +89,10 @@ services:
     environment:
       FINC_PUBLIC_HOST: ${FINC_PUBLIC_HOST:?set FINC_PUBLIC_HOST in .env (see .env.example)}
       FINC_PUBLIC_PORT: ${FINC_PUBLIC_PORT:-7443}
+    # TCP on IPv4 only (security research P2-08): the DuckDNS name has no IPv6 address and the router forwards IPv4,
+    # so an IPv6 or UDP (HTTP/3) listener would only be a way in nobody watches. Caddy serves HTTP/1.1 and HTTP/2.
     ports:
-      - "${FINC_PUBLIC_PORT:-7443}:${FINC_PUBLIC_PORT:-7443}"
-      - "${FINC_PUBLIC_PORT:-7443}:${FINC_PUBLIC_PORT:-7443}/udp"
+      - "0.0.0.0:${FINC_PUBLIC_PORT:-7443}:${FINC_PUBLIC_PORT:-7443}/tcp"
     volumes:
       - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/apk:/srv/apk:ro

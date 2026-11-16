@@ -13,6 +13,8 @@
 	# A client gets 10 s for its headers and 30 s for the whole request, so slow senders cannot hold connections open
 	# (security research P2-12). No write timeout: the 38 MB APK download on a slow phone line must finish.
 	servers {
+		# no HTTP/3: compose publishes TCP only (security research P2-08)
+		protocols h1 h2
 		timeouts {
 			read_header 10s
 			read_body 30s
