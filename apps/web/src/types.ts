@@ -874,6 +874,8 @@ export interface HoldingInsights {
   sector: InsightSector | null;
   /** the owner's own rules evaluated for this holding (stock decision aids A); absent on an older hub */
   rules?: HoldingRuleResult[];
+  /** decision aids E: one documented reading per source and where they agree; absent on an older hub */
+  signals?: SignalsBoard;
   /** decision aids B: the analysts' published ratings (Finnhub), latest month; null when unavailable, absent on an older hub */
   analysts?: InsightAnalysts | null;
   /** why `analysts` is null, when known */
@@ -1058,6 +1060,24 @@ export interface HoldingRuleInput {
 }
 
 export type HoldingRuleState = 'applies' | 'clear' | 'unknown';
+
+/** decision aids E (core insights/signals.ts) */
+export type SignalKey = 'trend' | 'market' | 'company' | 'analysts' | 'news';
+export type SignalReading = 'up' | 'down' | 'mixed' | 'ahead' | 'behind' | 'in_line' | 'growing' | 'shrinking' | 'positive' | 'negative' | 'unavailable';
+export interface BoardSignal {
+  key: SignalKey;
+  reading: SignalReading;
+  direction: 1 | -1 | 0 | null;
+  facts: Record<string, number | null>;
+  why?: 'no_data' | 'not_built' | 'etf';
+}
+export interface SignalsBoard {
+  signals: BoardSignal[];
+  rules: { apply: number; checked: number; total: number };
+  agreement: 'agree' | 'disagree' | 'none';
+  favourable: SignalKey[];
+  unfavourable: SignalKey[];
+}
 
 export interface HoldingRuleResult {
   ruleId: number;

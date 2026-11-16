@@ -130,7 +130,7 @@ describe('GET /api/holdings/:id/insights', () => {
     const env = setup();
     const r = await env.get(`/api/holdings/${env.id('TEST1')}/insights`);
     expect(r.status).toBe(200);
-    expect(Object.keys(r.body).sort()).toEqual(['analysts', 'analystsUnavailableCode', 'asOf', 'benchmark', 'company', 'companyUnavailableCode', 'crossCheck', 'currency', 'earnings', 'events', 'fetchedAt', 'filings', 'id', 'instrumentType', 'name', 'returns', 'risk', 'rules', 'sector', 'series', 'source', 'symbol', 'trend']);
+    expect(Object.keys(r.body).sort()).toEqual(['analysts', 'analystsUnavailableCode', 'asOf', 'benchmark', 'company', 'companyUnavailableCode', 'crossCheck', 'currency', 'earnings', 'events', 'fetchedAt', 'filings', 'id', 'instrumentType', 'name', 'returns', 'risk', 'rules', 'sector', 'series', 'signals', 'source', 'symbol', 'trend']);
     expect(r.body).toMatchObject({ company: null, companyUnavailableCode: 'off', filings: [], sector: null }); // no SEC contact
     expect(r.body).toMatchObject({ analysts: null, analystsUnavailableCode: 'off', earnings: null }); // no Finnhub service
     expect(r.body).toMatchObject({ id: env.id('TEST1'), symbol: 'TEST1', name: 'TEST1 Corp', currency: 'USD', asOf: '2026-11-10', fetchedAt: new Date(T0).toISOString(), source: 'yahoo', instrumentType: 'EQUITY' });
@@ -194,7 +194,7 @@ describe('GET /api/holdings/:id/insights: company sections from SEC (step 2)', (
     const env = setup({ sec: {} });
     const r = await env.get(`/api/holdings/${env.id('TEST1')}/insights`);
     expect(r.status).toBe(200);
-    expect(Object.keys(r.body).sort()).toEqual(['analysts', 'analystsUnavailableCode', 'asOf', 'benchmark', 'company', 'crossCheck', 'currency', 'earnings', 'events', 'fetchedAt', 'filings', 'id', 'instrumentType', 'name', 'returns', 'risk', 'rules', 'sector', 'series', 'source', 'symbol', 'trend']);
+    expect(Object.keys(r.body).sort()).toEqual(['analysts', 'analystsUnavailableCode', 'asOf', 'benchmark', 'company', 'crossCheck', 'currency', 'earnings', 'events', 'fetchedAt', 'filings', 'id', 'instrumentType', 'name', 'returns', 'risk', 'rules', 'sector', 'series', 'signals', 'source', 'symbol', 'trend']);
     const c = r.body.company;
     expect(Object.keys(c).sort()).toEqual(['cik', 'currency', 'figures', 'name', 'notes', 'sic', 'sicDescription']);
     expect(c).toMatchObject({ name: 'Test One Corp', cik: '0009999001', sic: '3571', sicDescription: 'Electronic Computers', currency: 'USD' });

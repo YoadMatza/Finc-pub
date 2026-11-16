@@ -3,13 +3,13 @@ import { Fragment, useMemo, useState, type PointerEvent, type ReactNode } from '
 import { Link } from 'react-router';
 import { api } from '../api';
 import { dayLabel, foreignMoney } from '../format';
-import { useI18n } from '../i18n';
+import { type Key, useI18n } from '../i18n';
 import { isNative, openExternalNative } from '../native';
 import { INSIGHTS_STALE_MS, RETURN_KEYS, absPct, axisNum, betaReading, buildChart, crossCheckNote, diffTone, drawdownView, insightsReady, lastYear, nearestIndex, ptsText, trendReadings, unavailableReason, type ChartBox } from '../insights';
 import { gainTone, pctText, stamp, toneClass } from '../live';
 import { groupResults, jerusalemDay, lastKnownText, noneApplyText, nowText, restSummary, ruleSentence, sinceDay, sourceText } from '../holdingRules';
 import { RATING_LABEL, analystsParts, changeText, monthYear, ratingColor, sharePct } from '../insightsAnalysts';
-import type { HoldingInsights, HoldingRuleResult, HoldingView, InsightCompanyNote, InsightFigure, InsightFiling, InsightPoint, LiveHoldingRow } from '../types';
+import type { BoardSignal, HoldingInsights, HoldingRuleResult, SignalsBoard, HoldingView, InsightCompanyNote, InsightFigure, InsightFiling, InsightPoint, LiveHoldingRow } from '../types';
 import { FILINGS_VISIBLE, TREND_ARROW, basisCaption, companyUnavailableReason, compactNumber, figureCurrency, filingText, isolateLtr, latestSecDate, marginTrend, noteText, openSecLink, periodLabel, placeNotes, ratioText, secLink, type MarginTrend } from '../insightsCompany';
 import { Amount, Bar, ErrorBox } from './ui';
 
@@ -55,6 +55,7 @@ export function InsightsView({ p, r, share, onBack }: { p: HoldingView; r: LiveH
         <ErrorBox error={q.error} onRetry={() => void q.refetch()} />
       ) : ready ? (
         <>
+          {ready.signals && <SignalsSection board={ready.signals} />}
           <CrossCheck d={ready} />
           <TrendSection d={ready} />
           <MarketSection d={ready} />
@@ -98,6 +99,54 @@ function Section({ title, help, children }: { title: string; help?: string; chil
       </header>
       {children}
     </section>
+  );
+}
+
+/**
+ * Decision aids E: one documented reading per source (core insights/signals.ts), each opening to its rule and the
+ * numbers it read, then the owner's rules counted and whether the readings agree. Never a score or an action.
+ */
+function SignalsSection({ board }: { board: SignalsBoard }) {
+  const { t } = useI18n();
+  const name = (k: BoardSignal['key']) => t(`sig_key_${k}` as Key);
+  const facts = (s: BoardSignal) =>
+    Object.entries(s.facts)
+      .filter(([, v]) => v !== null)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(' · ');
+  return (
+    <Section title={t('sig_title')} help={t('sig_help')}>
+      <ul className="flex flex-col gap-1">
+        {board.signals.map((s) => (
+          <li key={s.key}>
+            <details>
+              <summary className="cursor-pointer flex gap-2 items-baseline">
+                <span className="text-muted w-32 shrink-0">{name(s.key)}</span>
+                <span className={s.direction === 1 ? 'text-pos' : s.direction === -1 ? 'text-neg' : s.direction === 0 ? '' : 'text-muted'}>
+                  {t(`sig_r_${s.reading}` as Key)}
+                  {s.why ? ` (${t(`sig_why_${s.why}` as Key)})` : ''}
+                </span>
+              </summary>
+              <p className="text-xs text-muted leading-relaxed mt-1">{t(`sig_rule_${s.key}` as Key)}</p>
+              {facts(s) && (
+                <p className="text-xs text-muted num" dir="ltr">
+                  {facts(s)}
+                </p>
+              )}
+            </details>
+          </li>
+        ))}
+      </ul>
+      <p>{board.rules.total ? t('sig_rules_apply', { n: board.rules.apply, m: board.rules.checked }) : t('sig_rules_none')}</p>
+      <p className="font-semibold">
+        {board.agreement === 'agree'
+          ? t('sig_agree')
+          : board.agreement === 'disagree'
+            ? t('sig_disagree', { fav: board.favourable.map(name).join(', '), unfav: board.unfavourable.map(name).join(', ') })
+            : t('sig_none')}
+      </p>
+      <p className="text-xs text-muted">{t('sig_footer')}</p>
+    </Section>
   );
 }
 

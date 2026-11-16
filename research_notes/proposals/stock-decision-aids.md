@@ -133,6 +133,9 @@ labelled "AI summary of the headlines and figures above — can be wrong".
 
 ## Part E — The signals board (instead of a combined score)
 
+**Built 2026-11-16** (core insights/signals.ts, the stock panel's "Signals board"): trend, against the market, company and
+analysts by the rules below; news tone reads "not available" until Part C; Reddit dropped (owner, 2026-11-16).
+
 A single combined score would need arbitrary weights ("analysts 30%, Reddit 10%") and would read as a verdict. The
 board instead gives every source the same simple, documented reading and shows where they agree:
 

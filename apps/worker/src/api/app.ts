@@ -98,6 +98,7 @@ import {
   recurringOverview,
   billCalendar,
   setSplit,
+  signalsBoard,
   removeSplit,
   SplitError,
   SPLIT_MAX_PARTS,
@@ -1227,7 +1228,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const out = await buildPanel({ insights: state.insights, sec: state.sec, finnhub: state.finnhub, deadlines: state.panelDeadlines }, r, now);
     // the owner's rules for this symbol, evaluated now against this panel and the holdings (and stored)
     const rules = rulesForPanel(state.db, row.symbol, out, state.prices?.cache() ?? emptyPriceCache(), now());
-    return c.json({ ...out, rules });
+    // decision aids E: one documented reading per source and where they agree (core insights/signals.ts)
+    return c.json({ ...out, rules, signals: signalsBoard(out, rules) });
   });
   // --- the owner's own rules for holdings (research_notes/proposals/stock-decision-aids.md, Part A): fixed templates
   // with validated numbers, no free text. Any signed-in caller; edits from outside 30 an hour per actor; each edit is
