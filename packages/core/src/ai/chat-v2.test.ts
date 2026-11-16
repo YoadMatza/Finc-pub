@@ -288,3 +288,38 @@ describe('the prompt and lookups across turns', () => {
     expect(r2.lookups[0]).not.toBe(r1.lookups[0]);
   });
 });
+
+describe('compare_periods (chat v2 plan, built 2026-11-16)', () => {
+  const tool = (name: string) => CHAT_TOOLS.find((t) => t.name === name)!;
+  const byCat = (db: ReturnType<typeof seed>, month: string) =>
+    (tool('spend_by_category').run(db, { month }, TODAY) as { categories: Array<{ spent: number }> }).categories.reduce((s, c) => s + c.spent, 0);
+
+  it('this month against the same month last year: the same totals as spend_by_category', () => {
+    const db = seed();
+    const r = tool('compare_periods').run(db, { month: '2026-10', against: 'last_year' }, TODAY) as Record<string, any>;
+    expect(r.against).toMatchObject({ kind: 'same month last year', month: '2025-10' });
+    expect(r.total.now).toBeCloseTo(byCat(db, '2026-10'), 2);
+    expect(r.total.then).toBeCloseTo(byCat(db, '2025-10'), 2);
+    expect(r.total.change).toBeCloseTo(r.total.now - r.total.then, 2);
+    // largest change first
+    const changes = (r.categories as Array<{ change: number }>).map((c) => Math.abs(c.change));
+    expect(changes).toEqual([...changes].sort((a, b) => b - a));
+  });
+
+  it('against the average of the months before, by default the last full month and 6 months', () => {
+    const db = seed();
+    const r = tool('compare_periods').run(db, {}, TODAY) as Record<string, any>;
+    expect(r.month).toBe('2026-10');
+    expect(r.against).toMatchObject({ from: '2026-04', to: '2026-09' });
+    const avg = ['2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'].reduce((s, m) => s + byCat(db, m), 0) / 6;
+    expect(r.total.then).toBeCloseTo(avg, 1);
+  });
+
+  it('one group only, and an unknown group is an error the model can read', () => {
+    const db = seed();
+    const r = tool('compare_periods').run(db, { month: '2026-05', group: 'car' }, TODAY) as Record<string, any>;
+    expect(r.group).toBe('car');
+    expect((r.categories as Array<{ category: { group: string } | null }>).every((c) => c.category?.group === 'car')).toBe(true);
+    expect(tool('compare_periods').run(db, { group: 'no such thing' }, TODAY)).toHaveProperty('error');
+  });
+});

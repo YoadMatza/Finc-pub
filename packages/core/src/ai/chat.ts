@@ -354,6 +354,51 @@ function spendSummary(db: Db, a: Record<string, unknown>, today: string, ctx: To
   };
 }
 
+/**
+ * compare_periods (chat v2 plan, step 2): one month's spending per category against the same month last year, or
+ * against the average of the N full months before it. Computed here from the month summaries (refunds netted,
+ * transfers and card bills left out, like spend_by_category); the model gets totals and changes only.
+ */
+export function comparePeriods(db: Db, a: Record<string, unknown>, today: string, ctx: ToolContext = toolContext(db)): unknown {
+  const current = today.slice(0, 7);
+  const month = str(a.month) && /^\d{4}-\d{2}$/.test(str(a.month)!) ? str(a.month)! : addMonths(current, -1);
+  const against = str(a.against) === 'last_year' ? 'last_year' : 'average';
+  const n = Math.min(12, Math.max(2, Math.round(num(a.months, 6))));
+  const cats = ctx.cats();
+  const groupArg = str(a.group);
+  const group = groupArg ? resolveChatCategory(cats, groupArg) : null;
+  if (groupArg && !group) return unknownCategory(groupArg);
+  const spendOf = (m: string): Map<number | null, number> => {
+    const out = new Map<number | null, number>();
+    for (const c of monthSummary(db, m).byCategory) if (c.sum < 0 && c.section !== 'income' && (!group || group.ids.has(c.categoryId))) out.set(c.categoryId, -c.sum);
+    return out;
+  };
+  const now = spendOf(month);
+  const thenMonths = against === 'last_year' ? [addMonths(month, -12)] : Array.from({ length: n }, (_, i) => addMonths(month, -(i + 1)));
+  const then = new Map<number | null, number>();
+  for (const m of thenMonths) for (const [id, v] of spendOf(m)) then.set(id, (then.get(id) ?? 0) + v / thenMonths.length);
+  const ids = new Set([...now.keys(), ...then.keys()]);
+  const rows = [...ids]
+    .map((id) => {
+      const x = now.get(id) ?? 0;
+      const y = then.get(id) ?? 0;
+      return { category: id === null ? null : cats.get(id), now: ils(x), then: ils(y), change: ils(x - y), changePct: y > 0 ? Math.round(((x - y) / y) * 100) : null };
+    })
+    .sort((p, q) => Math.abs(q.change) - Math.abs(p.change));
+  const limit = Math.min(30, Math.max(1, Math.round(num(a.limit, 12))));
+  const sum = (m: Map<number | null, number>) => [...m.values()].reduce((s2, v) => s2 + v, 0);
+  return {
+    month,
+    ...(month === current ? { note: `${month} is not finished; its numbers are so far` } : {}),
+    against: against === 'last_year' ? { kind: 'same month last year', month: thenMonths[0] } : { kind: `average of the ${n} full months before`, from: thenMonths[thenMonths.length - 1], to: thenMonths[0] },
+    ...(group ? { group: group.key } : {}),
+    total: { now: ils(sum(now)), then: ils(sum(then)), change: ils(sum(now) - sum(then)) },
+    categories: rows.slice(0, limit),
+    ...(rows.length > limit ? { otherCategories: rows.length - limit } : {}),
+    method: 'spending per category; refunds netted, transfers and card bills left out; largest changes first',
+  };
+}
+
 export const CHAT_TOOLS: ToolSpec[] = [
   {
     name: 'spend_summary',
@@ -410,6 +455,12 @@ export const CHAT_TOOLS: ToolSpec[] = [
           : {}),
       };
     },
+  },
+  {
+    name: 'compare_periods',
+    description: 'What changed: the spending of one month per category against the same month last year ("against": "last_year") or against the average of the full months before it ("against": "average", "months": 6 by default). Largest changes first, with the total. Default month: the last full month. Optional "group" limits it to one category group (e.g. "car").',
+    params: '{"month": "YYYY-MM", "against": "average|last_year", "months": 6, "group": "car", "limit": 12}',
+    run: (db, a, today, ctx = toolContext(db)) => comparePeriods(db, a, today, ctx),
   },
   {
     name: 'spend_by_category',
