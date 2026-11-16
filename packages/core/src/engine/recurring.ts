@@ -129,30 +129,42 @@ export function buildRecurringStreams(db: Db, opts: { today?: string } = {}): Re
 
     // A merchant that bills several things (an insurer with five policies, a platform with several
     // subscriptions) is several streams: split each group into amount clusters first.
-    const clustered = new Map<string, TxnRow[]>();
+    // A price change (gaps plan 1.8) puts the new charges in another amount cluster; chainPriceSteps joins a later
+    // cluster that starts on the stream's next expected date back onto it, as a new price step.
+    const clustered = new Map<string, { steps: TxnRow[][] }>();
     for (const [key, members] of groups) {
       if (members.length < 2) continue;
       res.groupsExamined++;
       const useFxForCluster = fxMajority(members) !== null;
-      const clusters = clusterByAmount(members, (m) => Math.abs(useFxForCluster ? (m.originalAmount ?? m.amountIls) : m.amountIls));
-      clusters.forEach((c, i) => {
-        if (c.length >= 2) clustered.set(`${key}|${i}`, c);
+      const amountOf = (m: TxnRow): number => Math.abs(useFxForCluster ? (m.originalAmount ?? m.amountIls) : m.amountIls);
+      chainPriceSteps(clusterByAmount(members, amountOf), amountOf).forEach((c, i) => {
+        if (c.steps.reduce((n, st) => n + st.length, 0) >= 2) clustered.set(`${key}|${i}`, c);
       });
     }
 
-    for (const [key, members] of clustered) {
+    for (const [key, { steps }] of clustered) {
       const [accountId, merchantId, direction, clusterIdx] = key.split('|') as [string, string, 'expense' | 'income', string];
-      const sorted = [...members].sort((a, b) => a.txnDate.localeCompare(b.txnDate));
+      const sorted = steps.flat().sort((a, b) => a.txnDate.localeCompare(b.txnDate));
       // FX stream: model on the original currency when most rows share one non-ILS currency
       const fxCurrency = fxMajority(sorted);
       const useFx = fxCurrency !== null;
-      const amountsForModel = useFx ? sorted.map((m) => m.originalAmount ?? m.amountIls) : sorted.map((m) => m.amountIls);
-      const amount = modelAmounts(amountsForModel);
+      const amountIn = (m: TxnRow): number => (useFx ? (m.originalAmount ?? m.amountIls) : m.amountIls);
+      // the price the stream expects: the latest step once it has two charges, else the one before (so the first charge
+      // at a new price still shows as a price change against the old expectation)
+      const latest = steps[steps.length - 1]!;
+      const modelRows = steps.length === 1 || latest.length >= 2 ? latest : steps[steps.length - 2]!;
+      const amount = modelAmounts(modelRows.map(amountIn));
       if (!amount) continue;
-      // keep only rows that fit the amount model (a one-off big purchase at a subscription merchant is not part of the stream)
-      const fits = (m: TxnRow): boolean => Math.abs(Math.abs(useFx ? (m.originalAmount ?? m.amountIls) : m.amountIls) - Math.abs(amount.expected)) <= amount.tolerance;
-      const fitting = sorted.filter(fits);
+      // keep only rows that fit their own step's amount model (a one-off big purchase at a subscription merchant is not
+      // part of the stream); a step of one charge is kept as it is, chainPriceSteps already checked it
+      const fitting = steps
+        .flatMap((st) => {
+          const m = st.length >= 2 ? modelAmounts(st.map(amountIn)) : null;
+          return m ? st.filter((r) => Math.abs(Math.abs(amountIn(r)) - Math.abs(m.expected)) <= m.tolerance) : st;
+        })
+        .sort((a, b) => a.txnDate.localeCompare(b.txnDate));
       if (fitting.length < 2) continue;
+      const modelSet = new Set(modelRows.map((r) => r.id));
       const cadence = detectCadence(fitting.map((m) => m.txnDate));
       if (!cadence || cadence.fit < 0.6) continue;
       const catId = majorityNum(fitting.map((m) => m.categoryId).filter((c): c is number => c !== null));
@@ -162,7 +174,7 @@ export function buildRecurringStreams(db: Db, opts: { today?: string } = {}): Re
       if (!cat && amount.model !== 'fixed') continue;
 
       const last = fitting[fitting.length - 1]!;
-      const ilsAmounts = fitting.map((m) => m.amountIls);
+      const ilsAmounts = fitting.filter((m) => modelSet.has(m.id)).map((m) => m.amountIls);
       const ilsModel = modelAmounts(ilsAmounts) ?? { expected: last.amountIls, tolerance: Math.round(Math.abs(last.amountIls) * 0.1), model: 'variable' as const, cv: 1 };
       const expectedDay = cadence.frequency === 'monthly' || cadence.frequency === 'bimonthly' || cadence.frequency === 'quarterly' || cadence.frequency === 'annual' ? medianDay(fitting.map((m) => m.txnDate)) : null;
       const nextExpected = nextDate(last.txnDate, cadence, expectedDay);
@@ -170,8 +182,11 @@ export function buildRecurringStreams(db: Db, opts: { today?: string } = {}): Re
       const autoState = endedByGap ? 'ended' : fitting.length >= 3 && cadence.fit >= 0.75 ? 'confirmed' : 'candidate';
 
       // the same stream across runs: same account, merchant, direction and an expected amount within tolerance
+      // after a price step the stream may still be stored at an earlier price: any step's price finds it
+      const stepPrices = steps.map((st) => modelAmounts(st.map((m) => m.amountIls))?.expected ?? st[st.length - 1]!.amountIls);
       const prev =
         existing.find((s) => !seenStreamIds.has(s.id) && s.accountId === Number(accountId) && s.merchantId === Number(merchantId) && s.direction === direction && Math.abs(s.expectedAmount - ilsModel.expected) <= Math.max(s.amountTolerance, ilsModel.tolerance)) ??
+        existing.find((s) => !seenStreamIds.has(s.id) && s.accountId === Number(accountId) && s.merchantId === Number(merchantId) && s.direction === direction && stepPrices.some((p) => Math.abs(s.expectedAmount - p) <= Math.max(s.amountTolerance, Math.round(Math.abs(p) * 0.05)))) ??
         (clusterIdx === '0' ? existing.find((s) => !seenStreamIds.has(s.id) && s.accountId === Number(accountId) && s.merchantId === Number(merchantId) && s.direction === direction && s.stateSource === 'user') : undefined);
       const values = {
         accountId: Number(accountId),
@@ -233,6 +248,12 @@ export function buildRecurringStreams(db: Db, opts: { today?: string } = {}): Re
     // never reached confirmation (fewer than three occurrences) are dropped the same way.
     for (const s of existing) {
       if (seenStreamIds.has(s.id) || s.stateSource === 'user') continue;
+      // its charges now belong to another stream (an earlier or later price step, gaps plan 1.8): nothing is left of it
+      const left = tx.select({ n: sql<number>`count(*)` }).from(transactions).where(eq(transactions.recurringStreamId, s.id)).get();
+      if (!left?.n && s.occurrences > 0) {
+        dropStream(s.id);
+        continue;
+      }
       if (s.state === 'candidate' || (s.state === 'ended' && s.occurrences < 3)) {
         dropStream(s.id);
         continue;
@@ -357,6 +378,54 @@ function fxMajority(rows: TxnRow[]): string | null {
   const fx = majority(rows.map((m) => m.originalCurrency).filter((c) => c && c !== 'ILS') as string[]);
   if (fx === null) return null;
   return rows.filter((m) => m.originalCurrency === fx).length / rows.length >= 0.8 ? fx : null;
+}
+
+/**
+ * Join price steps (gaps plan 1.8): a cluster whose first charge comes after a stream-like cluster's last charge, on
+ * that cluster's next expected date (± a quarter of the cadence, at least 5 days), at ⅔–1.5× its last price, continues
+ * it; a joined step of a single charge ends the chain. Only one such cluster may qualify (two would be ambiguous, so neither joins), and a joined cluster of two or more
+ * charges must keep the cadence itself. Two subscriptions billed side by side interleave in time, so they never join.
+ * Returns the clusters in their original order, each as its price steps (oldest first).
+ */
+export function chainPriceSteps(clusters: TxnRow[][], amountOf: (r: TxnRow) => number): Array<{ steps: TxnRow[][] }> {
+  const byDate = (rows: TxnRow[]): TxnRow[] => [...rows].sort((a, b) => a.txnDate.localeCompare(b.txnDate));
+  const out = clusters.map((c) => ({ steps: [byDate(c)] }));
+  const used = new Set<number>();
+  for (let i = 0; i < out.length; i++) {
+    if (used.has(i)) continue;
+    const base = out[i]!;
+    for (;;) {
+      const rows = base.steps.flat();
+      if (rows.length < 2) break;
+      const cadence = detectCadence(rows.map((r) => r.txnDate));
+      if (!cadence || cadence.fit < 0.6) break;
+      const last = rows.reduce((a, b) => (b.txnDate > a.txnDate ? b : a));
+      const dayBased = cadence.frequency === 'monthly' || cadence.frequency === 'bimonthly' || cadence.frequency === 'quarterly' || cadence.frequency === 'annual';
+      const next = nextDate(last.txnDate, cadence, dayBased ? medianDay(rows.map((r) => r.txnDate)) : null);
+      const window = Math.max(5, Math.round(cadence.intervalDays * 0.25));
+      let found = -1;
+      for (let j = 0; j < out.length; j++) {
+        if (j === i || used.has(j)) continue;
+        const cand = out[j]!.steps.flat().sort((a, b) => a.txnDate.localeCompare(b.txnDate));
+        const first = cand[0]!;
+        if (first.txnDate <= last.txnDate || Math.abs(daysBetween(next, first.txnDate)) > window) continue;
+        const ratio = amountOf(first) / Math.max(1, amountOf(last));
+        if (ratio < 2 / 3 || ratio > 1.5) continue;
+        if (cand.length >= 2 && (detectCadence(cand.map((r) => r.txnDate))?.fit ?? 0) < 0.6) continue;
+        if (found !== -1) {
+          found = -2;
+          break;
+        }
+        found = j;
+      }
+      if (found < 0) break;
+      used.add(found);
+      base.steps = [...base.steps, ...out[found]!.steps];
+      // a single charge at a new price is the latest price, not yet a pattern: nothing chains on from it
+      if (out[found]!.steps.flat().length < 2) break;
+    }
+  }
+  return out.filter((_, i) => !used.has(i));
 }
 
 /** Sort by amount and cut where neighbours differ by more than 15% (or ₪3): one cluster per billed thing. */

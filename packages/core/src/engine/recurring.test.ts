@@ -108,6 +108,83 @@ describe('buildRecurringStreams', () => {
 
 import { eq } from 'drizzle-orm';
 
+describe('a price change does not break a stream (gaps plan 1.8)', () => {
+  const bill = (date: string, amount: number) => row(date, amount, 'HOT MOBILE');
+  const months = ['2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'];
+
+  it('one charge at the new price on the expected day stays in the stream, consumes its slot, and keeps the old expectation for now', () => {
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: [...months.map((m) => bill(`${m}-25`, -10000)), bill('2026-10-25', -12000)] });
+    prep();
+    buildRecurringStreams(db, { today: '2026-11-16' });
+    const streams = db.select().from(recurringStream).all();
+    expect(streams).toHaveLength(1);
+    const s = streams[0]!;
+    expect(s).toMatchObject({ state: 'confirmed', frequency: 'monthly', expectedAmount: -10000, nextExpectedDate: '2026-11-25', occurrences: 7 });
+    expect(db.select().from(transactions).where(eq(transactions.recurringStreamId, s.id)).all()).toHaveLength(7);
+    // the last charge is the new price, so the price-change insight (last charge vs expected) can fire
+    expect(db.select().from(transactions).where(eq(transactions.id, s.lastTxnId!)).get()?.amountIls).toBe(-12000);
+    expect(expectedSlots(db, '2026-10', { today: '2026-11-16' })[0]).toMatchObject({ status: 'matched' });
+  });
+
+  it('after the second charge at the new price the stream expects the new price, still one stream', () => {
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: [...months.map((m) => bill(`${m}-25`, -10000)), bill('2026-10-25', -12000), bill('2026-11-25', -12000)] });
+    prep();
+    buildRecurringStreams(db, { today: '2026-11-26' });
+    buildRecurringStreams(db, { today: '2026-11-26' }); // stable across runs
+    const streams = db.select().from(recurringStream).all();
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toMatchObject({ state: 'confirmed', expectedAmount: -12000, nextExpectedDate: '2026-12-25', occurrences: 8 });
+  });
+
+  it('two subscriptions at one merchant, running side by side, stay two streams', () => {
+    const rows: NormalizedRow[] = [];
+    for (const m of months) rows.push(row(`${m}-05`, -4990, 'APPLE.COM/BILL'), row(`${m}-18`, -1990, 'APPLE.COM/BILL'));
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows });
+    prep();
+    buildRecurringStreams(db, { today: '2026-10-01' });
+    expect(db.select().from(recurringStream).all().map((s) => s.expectedAmount).sort((a, b) => a - b)).toEqual([-4990, -1990]);
+  });
+
+  it('single charges at new prices do not walk a stream up step by step', () => {
+    const rows: NormalizedRow[] = months.map((m) => bill(`${m}-25`, -1000));
+    // one charge at each new price, every month on the day, each step 1.4x: 10 -> 14 -> 19.5 -> 27
+    rows.push(bill('2026-10-25', -1400), bill('2026-11-25', -1950), bill('2026-12-25', -2700));
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows });
+    prep();
+    buildRecurringStreams(db, { today: '2026-12-26' });
+    const s = db.select().from(recurringStream).all().find((x) => x.expectedAmount === -1000)!;
+    // the first new price joins, the next single charges do not chain on from it
+    expect(db.select().from(transactions).where(eq(transactions.recurringStreamId, s.id)).all().map((t) => t.amountIls).sort((a, b) => a - b)).toEqual([-1400, -1000, -1000, -1000, -1000, -1000, -1000]);
+  });
+
+  it('an older stream whose charges all moved to the new-price stream is removed, not left empty', () => {
+    const rows: NormalizedRow[] = [...months.map((m) => bill(`${m}-25`, -10000))];
+    for (const m of ['2026-10', '2026-11', '2026-12']) rows.push(bill(`${m}-25`, -12000));
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: rows.slice(0, 6) });
+    prep();
+    buildRecurringStreams(db, { today: '2026-10-01' });
+    expect(db.select().from(recurringStream).all()).toHaveLength(1);
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: rows.slice(6) });
+    prep();
+    // what the code before the fix left: a second stream for the new price, holding the new charges
+    const old = db.select().from(recurringStream).get()!;
+    const ins = db.insert(recurringStream).values({ ...old, id: undefined, expectedAmount: -12000, amountTolerance: 600, nextExpectedDate: '2027-01-25', occurrences: 3, createdAt: '2026-12-01' }).run();
+    db.update(transactions).set({ recurringStreamId: Number(ins.lastInsertRowid) }).where(eq(transactions.amountIls, -12000)).run();
+    buildRecurringStreams(db, { today: '2026-12-26' });
+    const streams = db.select().from(recurringStream).all();
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toMatchObject({ expectedAmount: -12000, occurrences: 9 });
+  });
+
+  it('a charge on the expected day at three times the price is not taken as a price change', () => {
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: [...months.map((m) => bill(`${m}-25`, -10000)), bill('2026-10-25', -30000)] });
+    prep();
+    buildRecurringStreams(db, { today: '2026-11-16' });
+    const s = db.select().from(recurringStream).get()!;
+    expect(db.select().from(transactions).where(eq(transactions.recurringStreamId, s.id)).all()).toHaveLength(6);
+  });
+});
+
 describe('stream hygiene', () => {
   it('two hits a year apart form nothing, Bit transfers never form a stream, and a quiet candidate is dropped', () => {
     ingestBatch(db, {
