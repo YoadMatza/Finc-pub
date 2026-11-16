@@ -1,14 +1,22 @@
 /** Read a CSV or XLSX statement into a grid of cells. */
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
 
 export type Cell = string | number | Date | null;
 export type Grid = Cell[][];
 
+/**
+ * Limits for a statement file (security research P3-03): a bank export is a few hundred KB and a few thousand rows.
+ * An .xlsx is a zip, so its declared unpacked size is checked before anything is unpacked.
+ */
+export const IMPORT_LIMITS = { fileBytes: 25 * 1024 * 1024, rows: 100_000, xlsxUnpackedBytes: 200 * 1024 * 1024 };
+
 export async function readGrid(file: string): Promise<{ grid: Grid; sheet?: string }> {
   const ext = path.extname(file).toLowerCase();
-  if (ext === '.csv' || ext === '.txt' || ext === '.tsv') return { grid: parseCsv(decodeText(readFileSync(file)), ext === '.tsv' ? '\t' : undefined) };
+  const size = statSync(file).size;
+  if (size > IMPORT_LIMITS.fileBytes) throw new Error(`the file is ${Math.round(size / 1024 / 1024)} MB; statements over ${IMPORT_LIMITS.fileBytes / 1024 / 1024} MB are refused`);
+  if (ext === '.csv' || ext === '.txt' || ext === '.tsv') return { grid: capRows(parseCsv(decodeText(readFileSync(file)), ext === '.tsv' ? '\t' : undefined)) };
   if (ext === '.xlsx' || ext === '.xlsm') return readXlsx(file);
   if (ext === '.xls') throw new Error('legacy .xls is not supported; re-save the file as .xlsx or export CSV');
   throw new Error(`unsupported file type "${ext}"`);
@@ -69,7 +77,40 @@ function detectDelimiter(text: string): string {
   return counts[0]![1] > 0 ? counts[0]![0] : ',';
 }
 
+function capRows(grid: Grid): Grid {
+  if (grid.length > IMPORT_LIMITS.rows) throw new Error(`the file has more than ${IMPORT_LIMITS.rows} rows; split it`);
+  return grid;
+}
+
+/**
+ * The total unpacked size a zip declares, from its central directory (no unpacking). Throws when the file is not a
+ * readable zip. ZIP64 archives (only needed past 4 GB) are refused.
+ */
+export function zipDeclaredSize(buf: Buffer): number {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65_535); i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('not a readable .xlsx (zip directory missing)');
+  const entries = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  let total = 0;
+  for (let n = 0; n < entries; n++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) throw new Error('not a readable .xlsx (zip directory damaged)');
+    const unpacked = buf.readUInt32LE(p + 24);
+    if (unpacked === 0xffffffff) throw new Error('zip64 .xlsx files are not supported');
+    total += unpacked;
+    p += 46 + buf.readUInt16LE(p + 28) + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+  }
+  return total;
+}
+
 async function readXlsx(file: string): Promise<{ grid: Grid; sheet?: string }> {
+  const unpacked = zipDeclaredSize(readFileSync(file));
+  if (unpacked > IMPORT_LIMITS.xlsxUnpackedBytes) throw new Error(`the .xlsx unpacks to ${Math.round(unpacked / 1024 / 1024)} MB; refused`);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(file);
   const ws = wb.worksheets.find((w) => w.rowCount > 0) ?? wb.worksheets[0];
@@ -81,7 +122,7 @@ async function readXlsx(file: string): Promise<{ grid: Grid; sheet?: string }> {
     for (let c = 1; c < values.length; c++) cells.push(toCell(values[c]));
     grid.push(cells);
   });
-  return { grid, sheet: ws.name };
+  return { grid: capRows(grid), sheet: ws.name };
 }
 
 function toCell(v: ExcelJS.CellValue): Cell {

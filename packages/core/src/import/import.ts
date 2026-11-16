@@ -191,17 +191,23 @@ export function parseDate(v: Cell, formats: ColumnMapping['dateFormats']): strin
   }
   const s = String(v).trim();
   let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  if (m) return realDate(m[1]!, m[2]!, m[3]!);
   m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
   if (m) {
     const [, d, mo, y] = m;
     const year = y!.length === 2 ? `20${y}` : y!;
     const day = d!.padStart(2, '0');
     const month = mo!.padStart(2, '0');
-    if (Number(month) > 12 || Number(day) > 31) return undefined;
-    return `${year}-${month}-${day}`;
+    return realDate(year, month, day);
   }
   return undefined;
+}
+
+/** A calendar date that exists (no day or month 00, no 31 February), or undefined (security research P3-03). */
+function realDate(y: string, m: string, d: string): string | undefined {
+  const t = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+  if (Number(y) < 1900 || t.getUTCFullYear() !== Number(y) || t.getUTCMonth() !== Number(m) - 1 || t.getUTCDate() !== Number(d)) return undefined;
+  return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
 }
 
 const isoLocal = (d: Date): string => new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
@@ -221,6 +227,8 @@ export function parseNumber(v: Cell): number | undefined {
     s = s.slice(0, -1);
   }
   if (s === '' || s === '-') return undefined;
+  // plain decimals only: Number() would also take "0x1F", "1e9" and "Infinity" (security research P3-03)
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(s)) return undefined;
   const n = Number(s);
   if (!Number.isFinite(n)) return undefined;
   return neg ? -n : n;

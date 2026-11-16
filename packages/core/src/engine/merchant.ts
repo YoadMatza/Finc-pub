@@ -20,7 +20,9 @@ const CITIES = [
 export const PROCESSOR_PREFIX = /^(bh|pp|sq|sp|tst|dd|amzn mktp|amazon mktp|paypal|google|apple\.com\/bill|uber|wlt)\s*\*\s*/i;
 const BRANCH_TOKEN = /^(סניף|branch|store|#\d*)$/; // "חנות" stays: it is part of real names ("חנות הספרים")
 /** Pure numbers / phone-like groups ("650", "253", "0000", "10000"), not alphanumeric names ("shopxyz1234"). */
-const NUMERIC_TOKEN = /^[\d.()+-]*\d{3,}[\d.()+-]*$/;
+/** Only digits and number punctuation, with a run of 3+ digits. Two linear checks: the single regex this replaced
+ * backtracked polynomially on long digit runs (security research P3-03; 3,200 digits took ~5 s). */
+export const isNumericToken = (t: string): boolean => /^[\d.()+-]+$/.test(t) && /\d{3}/.test(t);
 
 export interface MerchantNorm {
   key: string;
@@ -40,7 +42,7 @@ export function merchantKey(description: string): MerchantNorm {
   }
   let tokens = s.split(' ').filter(Boolean);
   // drop legal suffixes, country codes at the end, long digit runs, branch tokens, lone punctuation
-  tokens = tokens.filter((t) => !LEGAL.has(t) && !BRANCH_TOKEN.test(t) && !NUMERIC_TOKEN.test(t) && !/^[.,:;|]+$/.test(t));
+  tokens = tokens.filter((t) => !LEGAL.has(t) && !BRANCH_TOKEN.test(t) && !isNumericToken(t) && !/^[.,:;|]+$/.test(t));
   while (tokens.length > 1 && COUNTRY.has(tokens[tokens.length - 1]!)) tokens.pop();
   // a bare country code left alone means we stripped the whole name: fall back to the normalized text
   if (tokens.length === 1 && COUNTRY.has(tokens[0]!)) tokens = normalizeDescription(description).split(' ').filter(Boolean);

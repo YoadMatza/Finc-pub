@@ -109,6 +109,7 @@ import {
   incomeKinds,
   LimitError,
   checkSpendLimit,
+  cleanErrorText,
   getSpendLimit,
   setSpendLimit,
   currentMonth as limitMonthNow,
@@ -280,6 +281,18 @@ export const syncInstitutions = z.union([
     .max(SCRAPED_IDS.length)
     .refine((a) => new Set(a).size === a.length, { message: 'each institution at most once' }),
 ]);
+
+/**
+ * An error message fit for the caller (security research P3-03): cleaned like stored errors, and replaced by a plain
+ * phrase when it names a file path ("no vault at /data/vault.json"), which is for the worker log only.
+ */
+export function callerSafe(msg: string, fallback: string): string {
+  if (/(^|[\s'"(])(\/[\w.-]+){2,}|\b[A-Za-z]:[\\/]/.test(msg)) return fallback;
+  return cleanErrorText(msg, 200) || fallback;
+}
+
+/** A yes/no query flag: "1"/"true" or "0"/"false" only; coercing made "false" true (security research P3-03). */
+export const queryFlag = z.enum(['1', 'true', '0', 'false']).transform((v) => v === '1' || v === 'true');
 
 export const controlSyncBody = z.object({
   institutions: syncInstitutions.optional(),
@@ -470,8 +483,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
     if (err instanceof z.ZodError) return c.json({ error: 'invalid request', issues: err.issues.map((i) => `${i.path.join('.')}: ${i.message}`) }, 400);
     const msg = err instanceof Error ? err.message : String(err);
-    if (/^no /i.test(msg) || / is unknown/.test(msg)) return c.json({ error: msg }, 404);
-    if (/ is ambiguous/.test(msg)) return c.json({ error: msg }, 400);
+    if (/^no /i.test(msg) || / is unknown/.test(msg)) return c.json({ error: callerSafe(msg, 'not found') }, 404);
+    if (/ is ambiguous/.test(msg)) return c.json({ error: callerSafe(msg, 'ambiguous request') }, 400);
     // the detail goes to the log only (audit L2): paths, SQL and library internals are not for the caller
     log.error({ err: msg, stack: err instanceof Error ? err.stack : undefined, path: c.req.path }, 'api error');
     return c.json({ error: 'internal error; see the worker log' }, 500);
@@ -1016,7 +1029,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         planId: z.coerce.number().int().optional(),
         q: z.string().max(80).optional(),
         eventId: z.coerce.number().int().optional(),
-        includeExcluded: z.coerce.boolean().optional(),
+        includeExcluded: queryFlag.optional(),
         limit: z.coerce.number().int().min(1).max(1000).optional(),
         offset: z.coerce.number().int().min(0).optional(),
         sort: z.enum(['date', 'amount']).optional(),
@@ -1041,7 +1054,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   // --- events (design §7): tag transactions across months, see what they cost
   const eventBody = z.object({ name: z.string().min(1).max(80), note: z.string().max(500).nullable().optional(), fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(), toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional() });
   api.get('/events', (c) => {
-    const q = z.object({ archived: z.coerce.boolean().optional() }).parse(c.req.query());
+    const q = z.object({ archived: queryFlag.optional() }).parse(c.req.query());
     return c.json(listEvents(state.db, { includeArchived: q.archived ?? false }));
   });
   api.post('/events', async (c) => c.json(createEvent(state.db, defined(eventBody.parse(await c.req.json())))));
@@ -1503,15 +1516,18 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       if (check === 'missing') throw new HTTPException(404, { message: 'no such transaction' });
       if (check === 'not_income') throw new HTTPException(400, { message: 'only an income payment can be tagged regular or extra' });
     }
-    if (cat) out.category = setCategory(state.db, { txnId: id, categoryId: cat.id, applyToMerchant: body.applyToMerchant ?? false, createRule: body.createRule ?? false });
-    if (body.note !== undefined) setNote(state.db, id, body.note);
-    if (body.excluded !== undefined) setExcluded(state.db, id, body.excluded);
-    if (body.transfer !== undefined) markTransfer(state.db, id, body.transfer);
-    if (body.incomeKind !== undefined) {
-      const r = setIncomeKindOverride(state.db, id, body.incomeKind);
-      if (r === 'missing') throw new HTTPException(404, { message: 'no such transaction' });
-      if (r === 'not_income') throw new HTTPException(400, { message: 'only an income payment can be tagged regular or extra' });
-    }
+    // all of it or none of it (security research P3-03): a refusal at the end rolls back the earlier writes
+    state.db.transaction(() => {
+      if (cat) out.category = setCategory(state.db, { txnId: id, categoryId: cat.id, applyToMerchant: body.applyToMerchant ?? false, createRule: body.createRule ?? false });
+      if (body.note !== undefined) setNote(state.db, id, body.note);
+      if (body.excluded !== undefined) setExcluded(state.db, id, body.excluded);
+      if (body.transfer !== undefined) markTransfer(state.db, id, body.transfer);
+      if (body.incomeKind !== undefined) {
+        const r = setIncomeKindOverride(state.db, id, body.incomeKind);
+        if (r === 'missing') throw new HTTPException(404, { message: 'no such transaction' });
+        if (r === 'not_income') throw new HTTPException(400, { message: 'only an income payment can be tagged regular or extra' });
+      }
+    });
     return c.json({ ok: true, ...out, transaction: transactionDetail(state.db, id) });
   });
   /**

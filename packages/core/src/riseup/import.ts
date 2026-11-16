@@ -144,6 +144,8 @@ export async function importRiseup(db: Db, client: RiseupClient, o: RiseupImport
     }
 
     if (o.balances) {
+      // RiseUp's balance endpoints describe bank accounts only (they carry the overdraft limit; cards have no balance
+      // there), so the account they resolve to is the checking account (security research P3-03, checked 2026-11-16).
       const current = await client.currentBalances();
       for (const b of current) {
         const acc = resolveRiseupAccount(db, { source: b.source, sourceType: 'checkingAccount', accountNumberHash: b.accountNumberHash, accountNickname: b.accountNickname } as RiseupTransaction);
