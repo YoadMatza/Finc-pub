@@ -118,6 +118,22 @@ ticker goes to Finnhub (fixed host, no redirects, timeouts, the same rules as Ya
 "News" section: headlines with source, date, tone dot and link (opens in the browser); the AI summary above them,
 labelled "AI summary of the headlines and figures above — can be wrong".
 
+### What Part C sends, and what it costs (written 2026-11-16, before building)
+- **New outside service:** none. Finnhub is already set up (same key, same host `finnhub.io`); Yahoo is already used
+  for prices. The AI provider is the one the chat already uses (now OpenAI `gpt-5-mini`).
+- **What leaves the PC:**
+  - to Finnhub: the ticker and a 14-day date window (as for analysts today);
+  - to the AI provider: public headlines (title, source, date, Finnhub's one-line summary), the 8-K titles, and the
+    panel's public market facts (price trend, returns against the S&P 500, the company's reported figures). Never
+    a quantity, cost, gain, account or anything from the bank.
+- **Calls:** Finnhub's free tier allows 60 calls a minute; finc makes one news call per holding per 12 hours. The AI
+  call is cached per ticker for 12 hours, so at most 2 a day per stock, and only when the panel is opened.
+- **Size:** about 2,000 tokens in and 400 out per summary (10 headlines and the facts). For a handful of stocks that is
+  a few thousand tokens a day, inside the chat's existing limits for callers away from home; nothing runs on a
+  schedule.
+- **Turn off:** the summary has its own switch (Settings → AI); without a Finnhub key or an AI provider the News
+  section shows the headlines it can get, or "not available", and the board's news tone stays "not available".
+
 ## Part D — Reddit attention (ApeWisdom, no key)
 
 - **Source:** `https://apewisdom.io/api/v1.0/filter/all-stocks/page/N` — the most-mentioned tickers across stock
