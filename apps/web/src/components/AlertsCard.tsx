@@ -7,7 +7,7 @@ import { errorText } from '../limits';
 import type { AlertType, AlertsPayload } from '../types';
 import { Card, Empty, Spinner } from './ui';
 
-const TYPES: AlertType[] = ['missing_fixed', 'big_purchase', 'card_testing', 'unusual_charge', 'instalment_purchase', 'card_bill_gap', 'refund_matched', 'over_target', 'spend_limit', 'price_change', 'sync_error', 'stale_sync', 'otp_needed', 'candidate', 'uncategorised', 'weekly_summary'];
+const TYPES: AlertType[] = ['missing_fixed', 'big_purchase', 'card_testing', 'unusual_charge', 'instalment_purchase', 'card_bill_gap', 'refund_matched', 'over_target', 'spend_limit', 'price_change', 'sync_error', 'stale_sync', 'otp_needed', 'candidate', 'uncategorised', 'weekly_summary', 'image_old'];
 
 /** The two money-out thresholds (whole shekels), edited as a draft and saved on blur, Enter or the save button. */
 function AmountsEditor({ amounts, saving, onSave }: { amounts: { big: number; urgent: number }; saving: boolean; onSave: (next: { big: number; urgent: number }) => void }) {

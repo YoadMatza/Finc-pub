@@ -26,7 +26,7 @@ export * from './limit.js';
  * `big_purchase` is the per-transaction "money out" alert since 2026-11-10 (alerts/money.ts); the type keeps
  * its old name so an existing on/off choice keeps its meaning.
  */
-export const ALERT_TYPES = ['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'unusual_charge', 'refund_matched', 'over_target', 'price_change', 'candidate', 'uncategorised', 'weekly_summary', 'spend_limit'] as const;
+export const ALERT_TYPES = ['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'unusual_charge', 'refund_matched', 'over_target', 'price_change', 'candidate', 'uncategorised', 'weekly_summary', 'spend_limit', 'image_old'] as const;
 export type AlertType = (typeof ALERT_TYPES)[number];
 export const CHANNELS = ['telegram'] as const;
 export type Channel = (typeof CHANNELS)[number];
@@ -42,7 +42,7 @@ export interface AlertConfig {
   telegramChatId: string | null;
 }
 
-const DEFAULT_ON = new Set<AlertType>(['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'unusual_charge', 'refund_matched', 'over_target', 'price_change', 'weekly_summary', 'spend_limit']);
+const DEFAULT_ON = new Set<AlertType>(['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'unusual_charge', 'refund_matched', 'over_target', 'price_change', 'weekly_summary', 'spend_limit', 'image_old']);
 
 export function alertConfig(db: Db): AlertConfig {
   const matrix = {} as AlertConfig['matrix'];
@@ -174,6 +174,10 @@ export function alertText(i: Insight, lang: 'he' | 'en'): string | null {
     }
     case 'candidate':
       return he ? `🔁 קבועה חדשה? <b>${nm}</b> ${amt}` : `🔁 New recurring? <b>${nm}</b> ${amt}`;
+    case 'image_old':
+      return he
+        ? `🧰 תמונת ה-worker נבנתה לפני ${i.count} ימים (${i.date}). כדאי לבנות מחדש כדי ש-Chromium יקבל עדכוני אבטחה: docker compose build worker`
+        : `🧰 The worker image was built ${i.count} days ago (${i.date}). Rebuild it so Chromium gets security updates: docker compose build worker`;
     case 'uncategorised':
       return he ? `🏷️ ${i.count} תנועות צריכות קטגוריה` : `🏷️ ${i.count} transactions need a category`;
     case 'stale_sync': {
@@ -235,6 +239,7 @@ const KIND_TO_TYPE: Partial<Record<Insight['kind'], AlertType>> = {
   sync_error: 'sync_error',
   candidate: 'candidate',
   uncategorised: 'uncategorised',
+  image_old: 'image_old',
 };
 
 /** The alerts the hub would raise right now, as messages: attention items plus money out since the start point. */

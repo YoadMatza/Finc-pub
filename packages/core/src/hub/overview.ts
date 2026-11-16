@@ -19,7 +19,11 @@ import { VARIABLE_ROW_SQL } from '../engine/paidback.js';
 import { collectMoneyAlerts } from '../alerts/money.js';
 import { SPLIT_CATEGORY, SPLIT_JOIN, splitShare } from './splits.js';
 
-export type InsightKind = 'missing_fixed' | 'refund_matched' | 'uncategorised' | 'candidate' | 'price_change' | 'big_purchase' | 'unusual_charge' | 'sync_error' | 'stale_sync' | 'integrity' | 'suggested_links' | 'over_target';
+export type InsightKind = 'missing_fixed' | 'refund_matched' | 'uncategorised' | 'candidate' | 'price_change' | 'big_purchase' | 'unusual_charge' | 'sync_error' | 'stale_sync' | 'integrity' | 'suggested_links' | 'over_target' | 'image_old';
+
+/** Where the worker stores its image's build day, and the age past which the hub asks for a rebuild. */
+export const IMAGE_BUILT_SETTING = 'worker.imageBuiltAt';
+export const IMAGE_MAX_AGE_DAYS = 35;
 
 /** A scraped institution with no successful sync for longer than this is reported as stale_sync. */
 export const STALE_SYNC_HOURS = 36;
@@ -423,6 +427,13 @@ function insights(db: Db, s: MonthSummary, month: string, today: string, isCurre
       ...(cn.last_ok_at ? { date: todayLocal(new Date(cn.last_ok_at)) } : {}),
       count: Math.floor((now.getTime() - Date.parse(since)) / 3600_000),
     });
+  }
+
+  // the worker image's age (Dockerfile, main.ts): rebuild so Debian's Chromium gets security updates (P2-03)
+  const built = getSetting(db, IMAGE_BUILT_SETTING);
+  if (built && /^\d{4}-\d{2}-\d{2}$/.test(built)) {
+    const ageDays = Math.floor((now.getTime() - Date.parse(`${built}T00:00:00Z`)) / 86_400_000);
+    if (ageDays > IMAGE_MAX_AGE_DAYS) out.push({ key: `image:${built}`, kind: 'image_old', severity: 'warn', date: built, count: ageDays });
   }
 
   if (!s.integrity.ok || s.integrity.unmatchedSettlementDebits.length) out.push({ key: `integrity:${month}`, kind: 'integrity', severity: 'warn', count: s.integrity.unmatchedSettlementDebits.length });

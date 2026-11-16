@@ -40,7 +40,7 @@ export interface MonthSummary {
 
 export interface Insight {
   key: string;
-  kind: 'missing_fixed' | 'refund_matched' | 'uncategorised' | 'candidate' | 'price_change' | 'big_purchase' | 'unusual_charge' | 'sync_error' | 'stale_sync' | 'integrity' | 'suggested_links' | 'over_target';
+  kind: 'missing_fixed' | 'refund_matched' | 'uncategorised' | 'candidate' | 'price_change' | 'big_purchase' | 'unusual_charge' | 'sync_error' | 'stale_sync' | 'integrity' | 'suggested_links' | 'over_target' | 'image_old';
   severity: 'warn' | 'info' | 'ok';
   amount?: number;
   count?: number;
@@ -685,7 +685,7 @@ export interface Settings {
   spendLimit?: { month: string; amount: number | null };
 }
 
-export type AlertType = 'sync_error' | 'stale_sync' | 'otp_needed' | 'missing_fixed' | 'big_purchase' | 'instalment_purchase' | 'card_bill_gap' | 'card_testing' | 'unusual_charge' | 'refund_matched' | 'over_target' | 'price_change' | 'candidate' | 'uncategorised' | 'weekly_summary' | 'spend_limit';
+export type AlertType = 'sync_error' | 'stale_sync' | 'otp_needed' | 'missing_fixed' | 'big_purchase' | 'instalment_purchase' | 'card_bill_gap' | 'card_testing' | 'unusual_charge' | 'refund_matched' | 'over_target' | 'price_change' | 'candidate' | 'uncategorised' | 'weekly_summary' | 'spend_limit' | 'image_old';
 export interface AlertsPayload {
   /** amounts: whole shekels; money out from `big` is alerted, from `urgent` it goes out even in quiet hours */
   config: { matrix: Record<AlertType, { telegram: boolean }>; quiet: { from: string; to: string } | null; weekly: { day: number; hour: number }; amounts: { big: number; urgent: number }; unusualFactor: number; telegramChatId: string | null };

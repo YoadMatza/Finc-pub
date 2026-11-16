@@ -43,6 +43,9 @@ COPY --from=build /app/apps/web/dist apps/web/dist
 # the same load check as the build stage, now with production dependencies only: a dev-only import fails here
 RUN cd apps/worker && node --input-type=module -e "for (const m of ['api/app.js','scheduler.js','backup.js','offsite.js','alerts.js','connectors/scrape.js','cli/backup.js','alarm.js','cli/alerts.js','cli/vault.js','cli/guard.js','cli/sync.js','cli/worker-client.js','tlswatch.js','lockdown.js','alarm-poller.js','cli/panic.js','cli/events.js','prices.js','insights.js','sec.js','insights-panel.js','holding-rules.js','finnhub.js']) await import('./dist/' + m); console.log('worker modules load (runtime)')"
 RUN mkdir -p /data && chown node:node /data
+# the day this image was built: the worker reminds the owner to rebuild after 35 days, so Debian's Chromium (which
+# opens the bank sites) keeps getting security updates (security research P2-03)
+RUN date -u +%Y-%m-%d > /etc/finc-image-built
 USER node
 VOLUME ["/data"]
 EXPOSE 7733

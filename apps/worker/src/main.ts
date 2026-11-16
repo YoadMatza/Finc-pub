@@ -1,6 +1,7 @@
 /** Long-running worker: scheduler + local control port. The vault is unlocked via `finc unlock`. */
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
-import { type Db, type DbOwner, DbOwnedError, FINC_VERSION, type Vault, alertConfig, claimDb, cleanStoredErrors, dataDir, emptyPriceCache, flushSecurityEvents, getSetting, holdingSymbols, listDevices, listSecurityEvents, openDb, readOwner, recordSecurityEvent, scrubSecretEnv, telegramSend } from '@finc/core';
+import { type Db, type DbOwner, DbOwnedError, FINC_VERSION, type Vault, alertConfig, claimDb, cleanStoredErrors, dataDir, emptyPriceCache, flushSecurityEvents, getSetting, holdingSymbols, IMAGE_BUILT_SETTING, setSetting, listDevices, listSecurityEvents, openDb, readOwner, recordSecurityEvent, scrubSecretEnv, telegramSend } from '@finc/core';
 import { MAIN_BOT_ID_SETTING, readAlarmBot } from './alarm.js';
 import { AlarmPoller, statusText } from './alarm-poller.js';
 import { securityAlert, sendSecurityAlert } from './alerts.js';
@@ -137,6 +138,13 @@ try {
   log.error({ err: e }, 'stored error text could not be cleaned');
 }
 recordSecurityEvent(liveDb, { kind: 'worker.started', actor: 'system', detail: { version: FINC_VERSION } });
+// the image's build day (Dockerfile): the hub's "rebuild the image" reminder reads it (P2-03); a host run has none
+try {
+  const built = readFileSync('/etc/finc-image-built', 'utf8').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(built)) setSetting(liveDb, IMAGE_BUILT_SETTING, built);
+} catch {
+  setSetting(liveDb, IMAGE_BUILT_SETTING, null);
+}
 const live: WorkerState = { db: liveDb, vault: null as Vault | null, scheduler: null as unknown as Scheduler, startedAt: Date.now() };
 state = live;
 live.scheduler = new Scheduler(liveDb, () => live.vault, configFromEnv());
