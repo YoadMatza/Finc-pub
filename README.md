@@ -105,7 +105,7 @@ from the internet the only key is a **paired-device token** that the Android app
 **On this PC (once):**
 
 1. Router: forward TCP **7443** to this PC. Nothing else is opened; the certificate is obtained through DNS.
-2. `data\caddy.env` with one line, `DUCKDNS_TOKEN=…` (your DuckDNS token; finc never reads this file).
+2. `secrets\caddy.env` with one line, `DUCKDNS_TOKEN=…` (your DuckDNS token; finc never reads this file).
 3. `docker compose up -d --build` (see **Docker** below): the worker, Caddy with the DuckDNS module (certificate by
    DNS-01, nothing on port 80) and the DuckDNS updater come up together and restart with Docker.
 4. In the hub, Settings → Phone access → Public address: `https://finc-example.duckdns.org:7443`.
@@ -389,7 +389,7 @@ docker compose logs -f worker
 ```
 
 Needs: Docker, `data/` (the vault, the DB, browser profiles; a bind mount so the CLI on the host sees the same files),
-`data/caddy.env` with `DUCKDNS_TOKEN=…`. Optional `.env`: `FINC_PUBLIC_HOST`, `FINC_PUBLIC_PORT`, `FINC_DUCKDNS_DOMAIN`, `TZ`.
+`secrets/caddy.env` with `DUCKDNS_TOKEN=…` (outside `data/`, so the worker never sees it). Optional `.env`: `FINC_PUBLIC_HOST`, `FINC_PUBLIC_PORT`, `FINC_DUCKDNS_DOMAIN`, `TZ`.
 The worker trusts `X-Forwarded-*` only from Caddy's fixed address on the `edge` network (`FINC_TRUSTED_PROXIES`); the
 PIN still works only from trusted client addresses, never from the internet. It answers only to `localhost`,
 `127.0.0.1`, `FINC_PUBLIC_HOST`, the configured public URL and `FINC_ALLOWED_HOSTS` (anything else: 421, against DNS
@@ -419,8 +419,8 @@ worker runs.
 the host with the host's Node against the same `data/`; it writes nothing to the DB. It shares the worker's browser
 profiles, so stop the worker first (`docker compose stop worker`); finc refuses it otherwise.
 
-**Moving to the Raspberry Pi:** install Docker, copy the repository and the whole `data/` folder (vault, DB, `caddy.env`,
-`apk/`), forward the router port to the Pi instead of the PC, run `docker compose up -d --build` (the first build compiles
+**Moving to the Raspberry Pi:** install Docker, copy the repository, the whole `data/` folder (vault, DB,
+`apk/`) and `secrets/caddy.env`, forward the router port to the Pi instead of the PC, run `docker compose up -d --build` (the first build compiles
 Caddy and installs Chromium for arm64, allow 10–20 minutes), then `./finc.sh unlock`. Docker starts at boot there, so finc is
 up without anyone logging in; only the vault unlock remains manual, by design.
 
@@ -434,7 +434,7 @@ Every night at 03:40 (`FINC_BACKUP_TIME`) the worker writes one encrypted, verif
 - **What is in a backup:** the database (a consistent snapshot taken in memory) and `vault.json`, sealed together in
   one `finc-<UTC time>.fincbak` file with a key derived from the vault's. It opens only with the **master password in
   use on the day it was made** (it still works after a password change, with the old password).
-- **Not included:** `data/caddy.env`, `control.token`, browser profiles and the signing keystore. Keep the keystore
+- **Not included:** `secrets/caddy.env`, `control.token`, browser profiles and the signing keystore. Keep the keystore
   and its passwords somewhere safe yourself.
 - **Each backup is checked:** right after writing, it is decrypted again, the database's integrity check runs, and the
   row counts are compared.

@@ -2,7 +2,7 @@
 #
 # - HTTPS for {$FINC_PUBLIC_HOST} on {$FINC_PUBLIC_PORT} with a Let's Encrypt certificate obtained by the DNS-01
 #   challenge through DuckDNS, so only that one TCP port is forwarded on the router; port 80 stays closed.
-# - DUCKDNS_TOKEN comes from data/caddy.env (compose env_file); finc never reads it.
+# - DUCKDNS_TOKEN comes from secrets/caddy.env (compose env_file); the worker cannot see it, finc never reads it.
 # - reverse_proxy sets X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host; the worker trusts them from
 #   Caddy's fixed address on the edge network only (FINC_TRUSTED_PROXIES in docker-compose.yml), and still
 #   accepts the PIN only from trusted client addresses, never from the internet. The Host header passes through

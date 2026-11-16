@@ -5,7 +5,8 @@
 #   (needs FINC_PUBLIC_HOST and FINC_DUCKDNS_DOMAIN in .env, see .env.example)
 #   .\finc unlock  /  ./finc.sh unlock # after every worker start: the vault opens with the master password
 #
-# Secrets: data/vault.json (finc's vault) and data/caddy.env (DUCKDNS_TOKEN=... for Caddy and the updater).
+# Secrets: data/vault.json (finc's vault) and secrets/caddy.env (DUCKDNS_TOKEN=... for Caddy and the updater; outside
+# data/, so the worker never sees it: security research P2-03, audit H2).
 # Headful bank logins (finc spike …) run on a machine with a screen, outside the containers, on the same data/.
 # Container logs: capped so they cannot fill the disk (P1-08). They still go when a container is recreated; what
 # matters for security is in finc's security log (database) and Caddy's access log (data/logs/caddy).
@@ -57,6 +58,11 @@ services:
       # The APK the phone downloads (served by Caddy) is read-only to the worker: a compromised worker cannot
       # swap in a trojaned app (security research P0-05).
       - ./data/apk:/data/apk:ro
+      # The APK build and archive folders are not the worker's business: it sees empty folders there (P2-03).
+      - type: tmpfs
+        target: /data/apk-build
+      - type: tmpfs
+        target: /data/apk-archive
       # Bank browser profiles live in a Docker volume, not on the Windows share: there Chromium's private files (the
       # cookie store) became unreadable to the worker itself, so every sync was a "new device" and FIBI's login
       # intermittently ignored the button (2026-11-11/12). Copied from data/browser-profiles on 2026-11-12.
@@ -71,6 +77,14 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Read-only image (security research P2-03): the worker writes only to /data, /backup and these scratch folders
+    # (Chromium's temp files and its home). Chromium runs many threads, so the process limit is generous.
+    read_only: true
+    tmpfs:
+      - /tmp
+      # owned by the node user: Chromium's crash handler refuses to start without a writable home
+      - /home/node:uid=1000,gid=1000,mode=0700
+    pids_limit: 1024
     networks:
       - edge
 
@@ -97,7 +111,7 @@ services:
       caddy-perms:
         condition: service_completed_successfully
     env_file:
-      - path: ./data/caddy.env
+      - path: ./secrets/caddy.env
         required: true
     environment:
       FINC_PUBLIC_HOST: ${FINC_PUBLIC_HOST:?set FINC_PUBLIC_HOST in .env (see .env.example)}
@@ -162,7 +176,7 @@ services:
     networks:
       - duckdns
     env_file:
-      - path: ./data/caddy.env
+      - path: ./secrets/caddy.env
         required: true
     environment:
       FINC_DUCKDNS_DOMAIN: ${FINC_DUCKDNS_DOMAIN:?set FINC_DUCKDNS_DOMAIN in .env (see .env.example)}

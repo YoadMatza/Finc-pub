@@ -5,7 +5,7 @@ for, whether you need it, what account or key it takes, where that key goes, exa
 Anything not on this list is never contacted at run time.
 
 Where keys go: **always the encrypted vault** (`finc vault set <entry>`), never `.env` or an environment variable.
-The two exceptions are DuckDNS's token, which only Caddy and the DuckDNS updater read (`data/caddy.env`), and the
+The two exceptions are DuckDNS's token, which only Caddy and the DuckDNS updater read (`secrets/caddy.env`), and the
 alarm bot's token (`data/alarm-bot.json`, written by `finc alerts alarm setup`, kept outside the vault on purpose so
 security alerts work while the vault is locked).
 
@@ -20,7 +20,7 @@ security alerts work while the vault is locked).
 | Yahoo Finance (public chart endpoint) | No (live prices, stock facts) | none | — | free |
 | SEC EDGAR | No (company figures for US stocks) | none, a contact e-mail | `.env`: `FINC_SEC_CONTACT` | free |
 | Finnhub | No (analysts' ratings, earnings dates) | free API key | vault: `finnhub` | free tier |
-| DuckDNS | Only for access from outside home | DuckDNS account + token | `data/caddy.env` | free |
+| DuckDNS | Only for access from outside home | DuckDNS account + token | `secrets/caddy.env` | free |
 | Let's Encrypt | Only for access from outside home | none (automatic) | — | free |
 | A NAS over SFTP (your own) | No (off-machine backup copies) | an upload-only SSH user | vault: `nas_backup` | your hardware |
 
@@ -106,7 +106,7 @@ Without any of the optional services finc still syncs your banks, computes every
 |---|---|
 | **For** | A free public name for your home connection, and a real HTTPS certificate for it, so the Android app and passkey browsers can reach the hub. |
 | **Hosts** | `www.duckdns.org` (the updater, every 5 minutes; also the DNS-01 challenge), `acme-v02.api.letsencrypt.org` (Caddy, about every 60 days). |
-| **Setup** | A DuckDNS account and sub-domain; `FINC_PUBLIC_HOST` and `FINC_DUCKDNS_DOMAIN` in `.env`; `DUCKDNS_TOKEN=…` in `data/caddy.env`; forward TCP 7443 on your router. See getting-started section 5C. |
+| **Setup** | A DuckDNS account and sub-domain; `FINC_PUBLIC_HOST` and `FINC_DUCKDNS_DOMAIN` in `.env`; `DUCKDNS_TOKEN=…` in `secrets/caddy.env`; forward TCP 7443 on your router. See getting-started section 5C. |
 | **Sent** | To DuckDNS: the token and your sub-domain (your public IP is seen by the request). To Let's Encrypt: the host name. finc's worker never reads the DuckDNS token. |
 | **Turn off** | Run only the worker (getting-started section 5B). |
 

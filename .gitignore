@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 data/
+secrets/
 *.db
 *.db-journal
 *.db-wal

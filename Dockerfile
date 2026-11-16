@@ -27,8 +27,21 @@ RUN pnpm -r build
 # exports, 2026-11-10: the worker crash-looped) fails the BUILD instead of the running hub. Nothing is started.
 RUN cd apps/worker && node --input-type=module -e "for (const m of ['api/app.js','scheduler.js','backup.js','offsite.js','alerts.js','connectors/scrape.js','cli/backup.js','alarm.js','cli/alerts.js','cli/vault.js','cli/guard.js','cli/sync.js','cli/worker-client.js','tlswatch.js','lockdown.js','alarm-poller.js','cli/panic.js','cli/events.js','prices.js','insights.js','sec.js','insights-panel.js','holding-rules.js','finnhub.js']) await import('./dist/' + m); console.log('worker modules load')"
 
-FROM build AS runtime
+# The running image (security research P2-03): production dependencies of the worker only, plus the built output.
+# No TypeScript sources, compilers, Vite, test files or the web app's build tooling; same paths as before, so the
+# launchers keep running apps/worker/dist/cli.js.
+FROM base AS runtime
 ENV NODE_ENV=production FINC_DATA_DIR=/data FINC_PORT=7733
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages/core/package.json packages/core/
+COPY apps/worker/package.json apps/worker/
+RUN pnpm install --prod --frozen-lockfile --filter @finc/worker... && rm -rf /pnpm/store /root/.cache /root/.npm
+COPY --from=build /app/packages/core/dist packages/core/dist
+COPY --from=build /app/packages/core/drizzle packages/core/drizzle
+COPY --from=build /app/apps/worker/dist apps/worker/dist
+COPY --from=build /app/apps/web/dist apps/web/dist
+# the same load check as the build stage, now with production dependencies only: a dev-only import fails here
+RUN cd apps/worker && node --input-type=module -e "for (const m of ['api/app.js','scheduler.js','backup.js','offsite.js','alerts.js','connectors/scrape.js','cli/backup.js','alarm.js','cli/alerts.js','cli/vault.js','cli/guard.js','cli/sync.js','cli/worker-client.js','tlswatch.js','lockdown.js','alarm-poller.js','cli/panic.js','cli/events.js','prices.js','insights.js','sec.js','insights-panel.js','holding-rules.js','finnhub.js']) await import('./dist/' + m); console.log('worker modules load (runtime)')"
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]

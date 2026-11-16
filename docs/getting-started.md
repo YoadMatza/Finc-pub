@@ -173,18 +173,18 @@ The worker runs in that window (stop it with Ctrl+C) and serves the hub on http:
 ### B. Docker, home only
 
 Docker needs a file for Caddy's DuckDNS token even when Caddy does not run. In `.env` set
-`FINC_PUBLIC_HOST=localhost` and `FINC_DUCKDNS_DOMAIN=none`, then create an empty `data\caddy.env` and start only the
+`FINC_PUBLIC_HOST=localhost` and `FINC_DUCKDNS_DOMAIN=none`, then create an empty `secrets\caddy.env` and start only the
 worker:
 
 ```bash
-mkdir data
+mkdir data, secrets
 ```
 
 ```bash
-New-Item -ItemType File data\caddy.env
+New-Item -ItemType File secrets\caddy.env
 ```
 
-(That is PowerShell; in cmd use `type nul > data\caddy.env`.)
+(That is PowerShell; in cmd use `mkdir data secrets` and `type nul > secrets\caddy.env`.)
 
 ```bash
 docker compose up -d --build worker
@@ -199,7 +199,7 @@ The first build takes several minutes (it installs Chromium into the image).
 ### C. Docker with access from outside home (phone, other computers)
 
 1. Create a DuckDNS sub-domain pointing at your home IP; put its name in `FINC_PUBLIC_HOST` and `FINC_DUCKDNS_DOMAIN`.
-2. Create `data\caddy.env` with one line, `DUCKDNS_TOKEN=<your DuckDNS token>`. finc itself never reads this file.
+2. Create `secrets\caddy.env` with one line, `DUCKDNS_TOKEN=<your DuckDNS token>`. finc itself never reads this file.
 3. On your router, forward TCP **7443** to this computer. Nothing else is opened: the certificate comes from Let's
    Encrypt through DNS, port 80 stays closed.
 4. Start all three containers (worker, Caddy, DuckDNS updater):
@@ -554,7 +554,7 @@ aside instead of deleting it. Add `--with-vault` to restore the vault too. Then 
 with an upload-only user that cannot delete anything: `.\finc backup nas setup`, then `.\finc backup nas test`. See the
 README's "Off-PC copy on the NAS".
 
-**Not in the backups:** `data\caddy.env`, the Android signing keystore and its passwords, the alarm bot (run its setup
+**Not in the backups:** `secrets\caddy.env`, the Android signing keystore and its passwords, the alarm bot (run its setup
 again after a restore). Keep those safe yourself.
 
 **A lost or stolen phone.** Revoke it in Settings → Paired devices from any signed-in device. If you need everything
@@ -597,7 +597,7 @@ The database schema migrates itself on start. Rebuild and reinstall the Android 
 | `finc is not built yet` | Run `pnpm -r build`. |
 | Tests or typecheck fail on a fresh clone with "Cannot find module '@finc/core'" | `@finc/core` is not built yet: `pnpm -r build`. |
 | `docker compose` says `FINC_PUBLIC_HOST` is missing | Set it (and `FINC_DUCKDNS_DOMAIN`) in `.env`; placeholders are fine for a home-only setup. |
-| `docker compose` says `data/caddy.env` not found | Create it: empty for home-only (5B), `DUCKDNS_TOKEN=…` for remote access (5C). |
+| `docker compose` says `secrets/caddy.env` not found | Create it: empty for home-only (5B), `DUCKDNS_TOKEN=…` for remote access (5C). |
 | Syncs do not run, the hub shows a "vault locked" banner | The worker restarted: `.\finc unlock`. |
 | The worker answers 421 | You opened it under a name it does not know. Use `127.0.0.1`, `localhost` or your public name, or add the name to `FINC_ALLOWED_HOSTS` in `.env`. |
 | A bank keeps failing to log in | Check the password with `.\finc vault check`, then try a visible login with `.\finc spike <bank>` (section 7). |
@@ -617,11 +617,11 @@ Docker Compose is the same on Linux (amd64 or arm64). Use **`./finc.sh`** wherev
 
 It works like the Windows launchers: while the worker container runs, commands run inside it (`docker compose
 exec`); `spike` and `FINC_HOST=1 ./finc.sh …` run on the host, which needs Node and `pnpm -r build`; `backup restore`
-refuses while the worker runs. Use `cp .env.example .env` and `touch data/caddy.env`
+refuses while the worker runs. Use `cp .env.example .env`, `mkdir -p data secrets` and `touch secrets/caddy.env`
 instead of the Windows commands above. On a Raspberry Pi the first build compiles Caddy and installs Chromium for
 arm64; allow 10–20 minutes. Docker starts at boot there, so only the vault unlock is manual.
 
-To move an existing installation, copy the repository and the whole `data/` folder (vault, database, `caddy.env`,
-`apk/`), point the router's port forward at the new machine, run `docker compose up -d --build` and unlock.
+To move an existing installation, copy the repository, the whole `data/` folder (vault, database,
+`apk/`) and `secrets/caddy.env`, point the router's port forward at the new machine, run `docker compose up -d --build` and unlock.
 
 Headful bank logins (`spike`) need a screen; run those on a desktop machine against a copy of `data/`, or skip them.
