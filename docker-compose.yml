@@ -81,8 +81,21 @@ services:
     restart: unless-stopped
     logging: *logging
     mem_limit: 256m
+    # Hardened like the updater (security research P2-03): a non-root user (deploy/caddy/Dockerfile), a read-only root
+    # filesystem (it writes only to its volumes and the log folder), no capabilities, no privilege gain, few processes.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
     depends_on:
-      - worker
+      worker:
+        condition: service_started
+      caddy-perms:
+        condition: service_completed_successfully
     env_file:
       - path: ./data/caddy.env
         required: true
@@ -103,6 +116,30 @@ services:
       edge:
         # the one address the worker believes X-Forwarded-For from (FINC_TRUSTED_PROXIES above)
         ipv4_address: 172.30.73.10
+
+  # Runs once before Caddy and exits: hands Caddy's volumes and log folder to its unprivileged user (10001), for
+  # installs from before P2-03 and for a log folder Docker created as root. Only the capabilities chown needs.
+  caddy-perms:
+    image: finc-caddy:local
+    container_name: finc-caddy-perms
+    user: "0"
+    restart: "no"
+    logging: *logging
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["chown", "-R", "10001:10001", "/data", "/config", "/var/log/caddy"]
+    volumes:
+      - ./data/logs/caddy:/var/log/caddy
+      - caddy_data:/data
+      - caddy_config:/config
 
   # Keeps the DuckDNS name pointing at this connection's public IP (every 5 minutes). On its own network: it cannot
   # reach worker:7733 (P1-07). Pinned by digest, read-only, no capabilities, runs as curl_user.

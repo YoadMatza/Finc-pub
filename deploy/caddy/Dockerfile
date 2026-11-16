@@ -7,3 +7,10 @@ RUN xcaddy build --with github.com/caddy-dns/duckdns@v0.5.0
 
 FROM caddy:2@sha256:ce773ec7a742ce15ee6bf2bb5f65882b9e2a4487b10733e6f1484f86e6b5d8bc
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+# Not root (security research P2-03): Caddy listens on a high port and needs no privileges. New volumes take this
+# ownership from the image; the caddy-perms service in docker-compose.yml fixes older volumes and the log folder.
+# The base image gives the binary the file capability to bind low ports; with cap_drop ALL and no-new-privileges
+# that capability makes exec fail, and port 7443 does not need it: a plain copy drops it.
+RUN cp /usr/bin/caddy /usr/bin/caddy.plain && mv /usr/bin/caddy.plain /usr/bin/caddy \
+    && mkdir -p /data/caddy /config/caddy && chown -R 10001:10001 /data /config
+USER 10001:10001

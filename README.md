@@ -372,13 +372,14 @@ Chat model and follow-ups (0.8.13): Settings → AI has a "Chat model" choice, F
 
 ## Docker (the deployment)
 
-Three containers from one compose file, the same on this PC and on a Raspberry Pi (arm64):
+Three long-running containers (plus a one-shot) from one compose file, the same on this PC and on a Raspberry Pi (arm64):
 
 | Service | What | Ports |
 |---|---|---|
 | `worker` | hub + API + scheduler + bank connectors (Node 26, Debian Chromium) | 127.0.0.1:7733 (CLI and local browser) |
 | `caddy` | HTTPS for `finc-example.duckdns.org`, certificate via DuckDNS DNS-01, serves `data/apk/finc.apk` | 7443 (router forwards it) |
 | `duckdns` | keeps the DuckDNS name on this connection's public IP, every 5 minutes | — |
+| `caddy-perms` | runs once before Caddy and exits: gives Caddy's volumes and `data/logs/caddy` to its own user | — |
 
 ```bash
 docker compose up -d --build
