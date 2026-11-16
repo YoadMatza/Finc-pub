@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
@@ -50,8 +53,31 @@ function cspMeta(): Plugin {
   };
 }
 
+/** The service worker's cache name for one build: a hash of the built index.html (it names every hashed asset). */
+export function stampServiceWorker(sw: string, indexHtml: string): string {
+  const placeholder = "'finc-shell-dev'";
+  if (!sw.includes(placeholder)) throw new Error('finc-sw-version: the cache name placeholder is missing from sw.js');
+  return sw.replace(placeholder, `'finc-shell-${createHash('sha256').update(indexHtml).digest('hex').slice(0, 12)}'`);
+}
+
+/** Security research P3-02: a new build gets a new cache, so the old shell and assets are dropped on activate. */
+function swVersion(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'finc-sw-version',
+    apply: 'build',
+    configResolved(c) {
+      outDir = path.resolve(c.root, c.build.outDir);
+    },
+    closeBundle() {
+      const sw = path.join(outDir, 'sw.js');
+      writeFileSync(sw, stampServiceWorker(readFileSync(sw, 'utf8'), readFileSync(path.join(outDir, 'index.html'), 'utf8')));
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), cspMeta()],
+  plugins: [react(), tailwindcss(), cspMeta(), swVersion()],
   build: { outDir: 'dist', sourcemap: false, emptyOutDir: true },
   server: { port: 5173, proxy: { '/api': worker, '/health': worker } },
 });

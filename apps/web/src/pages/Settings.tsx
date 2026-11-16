@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api';
+import { revokeSession } from '../logout';
 import { AlertsCard } from '../components/AlertsCard';
 import { HoldingRulesCard } from '../components/HoldingRulesCard';
 import { IncomeKindsCard } from '../components/IncomeKindsCard';
@@ -28,7 +29,8 @@ export function Settings({ onSignOut, thisDevice }: { onSignOut: () => void; thi
   const rulePatch = useMutation({ mutationFn: (p: { id: number; enabled: boolean }) => api.patch(`/api/rules/${p.id}`, { enabled: p.enabled }), onSuccess: () => qc.invalidateQueries({ queryKey: ['rules'] }) });
   const ruleDel = useMutation({ mutationFn: (id: number) => api.del(`/api/rules/${id}`), onSuccess: () => qc.invalidateQueries({ queryKey: ['rules'] }) });
   const engine = useMutation({ mutationFn: () => api.post('/api/engine/run'), onSuccess: () => qc.invalidateQueries() });
-  const logout = useMutation({ mutationFn: () => api.post('/api/auth/logout'), onSuccess: onSignOut, onError: onSignOut });
+  // revoke on the hub first; if it cannot be reached, stay signed in and say so (P3-02)
+  const logout = useMutation({ mutationFn: () => revokeSession(() => api.post('/api/auth/logout')), onSuccess: (r) => r === 'revoked' && onSignOut() });
   if (q.isPending) return <Spinner />;
   if (q.error) return <ErrorBox error={q.error} onRetry={() => q.refetch()} />;
   const s = q.data;
@@ -120,13 +122,14 @@ export function Settings({ onSignOut, thisDevice }: { onSignOut: () => void; thi
           <Empty>{t('no_rules')}</Empty>
         )}
       </Card>
+      {logout.data === 'failed' && <p className="text-xs text-neg" role="alert">{t('sign_out_failed')}</p>}
       <div className="flex justify-between items-center text-xs text-muted">
         <span>
           {isNative && appInfo.data ? `${t('app_version')} ${appInfo.data.version} (${appInfo.data.build}) · ` : ''}
           {t('hub_version')} {s.version}
         </span>
         {!isNative && (
-          <button className="btn btn-sm" onClick={() => logout.mutate()}>
+          <button className="btn btn-sm" disabled={logout.isPending} onClick={() => logout.mutate()}>
             {t('sign_out')}
           </button>
         )}
