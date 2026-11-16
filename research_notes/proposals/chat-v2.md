@@ -80,6 +80,9 @@ Nothing here is built yet.
 4. Model choice in Settings (only if the eval says it matters) and follow-up chips.
 
 ## 5. Decisions for the owner
+
+**Decided 2026-11-16: all three as built.** The chat starts on Fast (gpt-5-mini) with the Better switch; the quality
+check (`finc chat-eval`, fixture data only) runs when the chat changes; "foreign" means charged in a foreign currency.
 1. Step 3's model choice: keep gpt-5-mini as the default, or move the chat to a stronger model (more cost per question)?
 2. Running the eval calls the AI provider with fixture data only (no real data): about 25–50 calls per run. OK?
 3. "Foreign": charged in a foreign currency (what the bank data has). A shekel charge at a foreign site can't be told
