@@ -465,6 +465,28 @@ export const eventTxn = sqliteTable(
   (t) => [uniqueIndex('event_txn_unique').on(t.eventId, t.txnId), index('event_txn_txn').on(t.txnId)],
 );
 
+/**
+ * A transaction split across categories (wave 5, research_notes/proposals/split-transaction.md): its parts add up
+ * exactly to the transaction's amount. No row = not split. The transaction keeps its own category as the main one
+ * (rules, merchant memory, the AI); every sum by category reads the parts instead.
+ */
+export const txnSplit = sqliteTable(
+  'txn_split',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    txnId: integer('txn_id')
+      .notNull()
+      .references(() => transactions.id, { onDelete: 'cascade' }),
+    categoryId: integer('category_id')
+      .notNull()
+      .references(() => category.id),
+    amount: integer('amount').notNull(), // agorot, signed like the transaction
+    sort: integer('sort').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (t) => [index('txn_split_txn').on(t.txnId)],
+);
+
 /** Net worth (design §6): holdings finc cannot scrape yet, entered by hand with a value history. */
 export const manualAsset = sqliteTable('manual_asset', {
   id: integer('id').primaryKey({ autoIncrement: true }),

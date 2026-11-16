@@ -17,6 +17,7 @@ import { type NowIncome, nowIncome } from './now.js';
 import { type HubLimit, spendLimitStatus } from './limit.js';
 import { VARIABLE_ROW_SQL } from '../engine/paidback.js';
 import { collectMoneyAlerts } from '../alerts/money.js';
+import { SPLIT_CATEGORY, SPLIT_JOIN, splitShare } from './splits.js';
 
 export type InsightKind = 'missing_fixed' | 'refund_matched' | 'uncategorised' | 'candidate' | 'price_change' | 'big_purchase' | 'unusual_charge' | 'sync_error' | 'stale_sync' | 'integrity' | 'suggested_links' | 'over_target';
 
@@ -171,8 +172,8 @@ export function hubOverview(db: Db, monthArg?: string, view: View = 'purchase', 
   // --- breakdown by group: actual this month, expected for the whole month
   const groupRows = c
     .prepare(
-      `select coalesce(c.group_key, 'uncategorised') g, coalesce(c.section, 'variable') section, count(*) n, sum(t.amount_ils) v
-       from "transaction" t join account a on a.id = t.account_id left join category c on c.id = t.category_id
+      `select coalesce(c.group_key, 'uncategorised') g, coalesce(c.section, 'variable') section, count(*) n, sum(${splitShare('t.amount_ils')}) v
+       from "transaction" t join account a on a.id = t.account_id ${SPLIT_JOIN} left join category c on c.id = ${SPLIT_CATEGORY}
        where ${view === 'billing' ? `(case when a.type = 'credit_card' then substr(coalesce(t.charge_date, t.txn_date), 1, 7) else t.cashflow_month end)` : 't.cashflow_month'} = ?
          and t.status = 'completed' and t.excluded = 0 and t.amount_ils < 0 and coalesce(t.kind,'') <> 'savings' and t.installment_plan_id is null
        group by 1, 2`,
@@ -183,7 +184,7 @@ export function hubOverview(db: Db, monthArg?: string, view: View = 'purchase', 
   for (const hm of history) {
     const rows = c
       .prepare(
-        `select coalesce(c.group_key, 'uncategorised') g, sum(t.amount_ils) v from "transaction" t left join category c on c.id = t.category_id
+        `select coalesce(c.group_key, 'uncategorised') g, sum(${splitShare('t.amount_ils')}) v from "transaction" t ${SPLIT_JOIN} left join category c on c.id = ${SPLIT_CATEGORY}
          where t.cashflow_month = ? and t.status = 'completed' and t.excluded = 0 and t.amount_ils < 0 and coalesce(t.kind,'') <> 'savings' and t.installment_plan_id is null group by 1`,
       )
       .all(hm) as Array<{ g: string; v: number }>;
@@ -196,8 +197,8 @@ export function hubOverview(db: Db, monthArg?: string, view: View = 'purchase', 
   // variable groups: exclude rows that belong to confirmed streams (those are "fixed" above)
   const variableByGroup = c
     .prepare(
-      `select coalesce(c.group_key, 'uncategorised') g, count(*) n, sum(t.amount_ils) v
-       from "transaction" t join account a on a.id = t.account_id left join category c on c.id = t.category_id
+      `select coalesce(c.group_key, 'uncategorised') g, count(*) n, sum(${splitShare('t.amount_ils')}) v
+       from "transaction" t join account a on a.id = t.account_id ${SPLIT_JOIN} left join category c on c.id = ${SPLIT_CATEGORY}
        where ${view === 'billing' ? `(case when a.type = 'credit_card' then substr(coalesce(t.charge_date, t.txn_date), 1, 7) else t.cashflow_month end)` : 't.cashflow_month'} = ?
          and t.status = 'completed' and t.excluded = 0 and t.amount_ils < 0 and coalesce(t.kind,'') <> 'savings' and t.installment_plan_id is null
          and (t.recurring_stream_id is null or not exists (select 1 from recurring_stream rs where rs.id = t.recurring_stream_id and rs.state = 'confirmed'))

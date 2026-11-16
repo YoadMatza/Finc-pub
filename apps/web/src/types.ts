@@ -107,9 +107,11 @@ export interface Txn {
   paidBackByRule?: boolean;
   /** step 3: false when the bank text is shared by several payers, so an answer can cover only this payment. */
   canRemember?: boolean;
+  /** split across categories (spending only); the row's own category stays the main one */
+  split: boolean;
 }
 
-export interface TxnDetail extends Txn {
+export interface TxnDetail extends Omit<Txn, 'split'> {
   identifier: string | null;
   source: string;
   annotations: Record<string, unknown> | null;
@@ -117,6 +119,17 @@ export interface TxnDetail extends Txn {
   links: Array<{ id: number; type: string; direction: 'from' | 'to'; otherTxnId: number; otherDate: string; otherDescription: string; otherAmount: number; amount: number; confidence: number; zone: string; decision: string | null; explanation: Array<{ signal: string; score: number; note: string }> }>;
   aiSuggestion: { categoryId: number | null; confidence: number; reason: string | null; model: string } | null;
   events: Array<{ id: number; name: string }>;
+  /** the split's parts (negative agorot, adding up exactly to `amount`); null when not split */
+  split: SplitPart[] | null;
+}
+
+/** One part of a split transaction, as the hub returns it. */
+export interface SplitPart {
+  categoryId: number;
+  categoryKey: string;
+  nameHe: string;
+  nameEn: string;
+  amount: number;
 }
 
 export interface TxnPage {

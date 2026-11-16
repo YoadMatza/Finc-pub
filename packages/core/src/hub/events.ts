@@ -6,6 +6,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Db } from '../db/db.js';
 import { event, eventTxn, transactions } from '../db/schema.js';
+import { SPLIT_CATEGORY, SPLIT_JOIN, splitShare } from './splits.js';
 
 export interface EventView {
   id: number;
@@ -56,8 +57,8 @@ function totals(db: Db, ids: number[]): Map<number, Totals> {
 function breakdown(db: Db, id: number): Pick<EventView, 'byGroup' | 'byCategory'> {
   const rows = db.$client
     .prepare(
-      `select coalesce(c.group_key, 'uncategorised') g, c.key, c.name_he, c.name_en, sum(-t.amount_ils) s, count(*) n
-       from event_txn et join "transaction" t on t.id = et.txn_id left join category c on c.id = t.category_id
+      `select coalesce(c.group_key, 'uncategorised') g, c.key, c.name_he, c.name_en, sum(${splitShare('-t.amount_ils')}) s, count(*) n
+       from event_txn et join "transaction" t on t.id = et.txn_id ${SPLIT_JOIN} left join category c on c.id = ${SPLIT_CATEGORY}
        where et.event_id = ? and t.amount_ils < 0 and t.status <> 'voided'
        group by 1, 2, 3, 4 order by s desc`,
     )

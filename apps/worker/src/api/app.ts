@@ -97,6 +97,10 @@ import {
   recentAlerts,
   recurringOverview,
   billCalendar,
+  setSplit,
+  removeSplit,
+  SplitError,
+  SPLIT_MAX_PARTS,
   registerDevice,
   renameDevice,
   resolveCategory,
@@ -450,7 +454,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     return c.json({ error: 'wrong host' }, 421);
   });
   // before the write guard, so the Android app gets a readable refusal instead of an opaque network error
-  app.use('/api/*', cors({ origin: APP_ORIGINS, allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'], credentials: false, maxAge: 600 }));
+  app.use('/api/*', cors({ origin: APP_ORIGINS, allowHeaders: ['authorization', 'content-type'], allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], credentials: false, maxAge: 600 }));
   // No API answer (balances, transactions) may be kept in a browser's or the phone WebView's HTTP disk cache, where
   // it would sit unencrypted outside the app lock (security research P1-11 review). Control routes too.
   const noStore = async (c: Context, next: () => Promise<void>): Promise<void> => {
@@ -1549,6 +1553,28 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       }
     });
     return c.json({ ok: true, ...out, transaction: transactionDetail(state.db, id) });
+  });
+  // split one transaction across categories (wave 5, core hub/splits.ts): spending only, 2-8 parts adding up exactly
+  api.put('/transactions/:id/split', async (c) => {
+    const id = Number(c.req.param('id'));
+    const { parts } = z
+      .object({ parts: z.array(z.object({ category: z.union([z.number().int(), z.string().min(1).max(80)]), amount: z.number().int() }).strict()).min(1).max(SPLIT_MAX_PARTS) })
+      .strict()
+      .parse(await c.req.json());
+    const resolved = parts.map((p) => ({ categoryId: typeof p.category === 'number' ? p.category : resolveCategory(state.db, p.category).id, amount: p.amount }));
+    try {
+      setSplit(state.db, id, resolved);
+    } catch (e) {
+      if (e instanceof SplitError) throw new HTTPException(e.message === 'no such transaction' ? 404 : 400, { message: e.message });
+      throw e;
+    }
+    return c.json({ ok: true, transaction: transactionDetail(state.db, id) });
+  });
+  api.delete('/transactions/:id/split', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!transactionDetail(state.db, id)) throw new HTTPException(404, { message: 'no such transaction' });
+    removeSplit(state.db, id);
+    return c.json({ ok: true, transaction: transactionDetail(state.db, id) });
   });
   /**
    * Now screen, paid back to me: the owner's answer about one incoming payment (hub/paidback.ts). Display only, like the

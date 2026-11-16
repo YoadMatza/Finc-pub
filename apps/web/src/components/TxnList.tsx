@@ -39,7 +39,7 @@ function useOpen(onOpen?: (t: Txn) => void) {
 /**
  * One calm line per transaction: day, name, amount. Everything else lives in the detail sheet. The
  * only marks on the line change what the amount means: pending, cancelled, refunded, installment
- * n/total, and "charged on" for rows dated after today (card installments post their future slices).
+ * n/total, "charged on" for rows dated after today (card installments post their future slices), and split.
  */
 export function TxnList({ items, onOpen, showDate = true, today }: { items: Txn[]; onOpen?: (t: Txn) => void; showDate?: boolean; today?: string }) {
   const { t } = useI18n();
@@ -67,7 +67,8 @@ export function TxnList({ items, onOpen, showDate = true, today }: { items: Txn[
                     : null;
         const settle = settlementNote(x, t);
         // step 3: an incoming payment counted as paid back to the owner (not income)
-        const line = [note, paidBackState(x) === 'paid_back' ? t('paid_back_marker') : null].filter(Boolean).join(' · ');
+        // a split charge says so next to its other marks (its parts live in the detail sheet)
+        const line = [note, paidBackState(x) === 'paid_back' ? t('paid_back_marker') : null, x.split ? t('split_marker') : null].filter(Boolean).join(' · ');
         return (
           <div key={x.id} className={`flex items-center gap-3 py-2.5 px-1 row-link rounded-md ${pending || future ? 'opacity-60' : ''}`} onClick={() => open(x)}>
             {showDate && <span className="num text-xs text-muted w-10 shrink-0">{shortDate(x.date)}</span>}

@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router';
 import { api, qs } from '../api';
 import { MonthNav } from '../components/MonthNav';
 import { PaidBackQuestion, useUndoPaidBack } from '../components/PaidBack';
+import { SplitSection } from '../components/SplitSection';
 import { CategoryChip, TxnByDate, TxnList, TxnSections, buildSections, sectionLabel, todayLocal } from '../components/TxnList';
 import { Amount, Card, Chip, Empty, ErrorBox, Row, Sheet, Spinner } from '../components/ui';
 import { dayLabel, money, monthLabel } from '../format';
@@ -458,6 +459,7 @@ export function TxnSheet({ id, onClose }: { id: number | null; onClose: () => vo
               </label>
             </div>
           )}
+          <SplitSection key={x.id} x={x} categories={catOptions} onChanged={invalidate} />
           {x.amount > 0 && x.bucket === 'income' && x.incomeKind !== undefined && (
             <div className="flex flex-col gap-1">
               <span className="text-muted">{t('income_kind_label')}</span>

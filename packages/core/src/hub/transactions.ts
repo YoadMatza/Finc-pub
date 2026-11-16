@@ -8,6 +8,7 @@ import type { Db } from '../db/db.js';
 import type { View } from '../engine/summary.js';
 import { PAID_BACK } from '../engine/rules.js';
 import { type PaidBackContext, paidBackContext } from './paidback.js';
+import { type SplitPartView, splitOf } from './splits.js';
 
 export type TxnBucket = 'income' | 'fixed' | 'variable' | 'installments' | 'savings' | 'settlements' | 'transfers' | 'refunds' | 'excluded';
 
@@ -69,6 +70,8 @@ export interface TxnListItem {
   excluded: boolean;
   categoryId: number | null;
   categoryKey: string | null;
+  /** split across categories (hub/splits.ts); the parts are in the detail */
+  split: boolean;
   categorySource: string | null;
   categoryConfidence: number | null;
   merchantId: number | null;
@@ -164,13 +167,15 @@ interface Row {
   income_kind_override: string | null;
   description_norm: string;
   netted: number;
+  split: number;
 }
 
 const SELECT = `select t.id, t.txn_date, t.charge_date, t.cashflow_month, t.amount_ils, t.original_amount, t.original_currency, t.description_raw, t.memo,
   t.account_id, a.display_name account_name, a.type account_type, a.institution_id, t.status, t.kind, ${BUCKET_EXPR} bucket, t.excluded,
   t.category_id, c.key category_key, t.category_source, t.category_confidence, t.merchant_id, m.name merchant_name,
   t.installment_n, t.installment_total, t.installment_plan_id, t.recurring_stream_id, t.note, t.income_kind_override, t.description_norm,
-  coalesce((select sum(l.amount) from link l where l.to_txn_id = t.id and l.type in ('refund','cancellation') and l.zone = 'auto' and coalesce(l.decision,'') <> 'rejected'), 0) netted
+  coalesce((select sum(l.amount) from link l where l.to_txn_id = t.id and l.type in ('refund','cancellation') and l.zone = 'auto' and coalesce(l.decision,'') <> 'rejected'), 0) netted,
+  exists (select 1 from txn_split sp where sp.txn_id = t.id) split
   from "transaction" t
   join account a on a.id = t.account_id
   left join category c on c.id = t.category_id
@@ -271,6 +276,7 @@ function toItem(r: Row, pb: PaidBackContext): TxnListItem {
     excluded: r.excluded === 1,
     categoryId: r.category_id,
     categoryKey: r.category_key,
+    split: r.split === 1,
     categorySource: r.category_source,
     categoryConfidence: r.category_confidence,
     merchantId: r.merchant_id,
@@ -369,7 +375,8 @@ export function listTransactions(db: Db, f: TxnFilters = {}): TxnPage {
   return { items, total: agg.n, sum: agg.s, netSum: agg.ns };
 }
 
-export interface TxnDetail extends TxnListItem {
+/** `split` here is the parts (the list's `split` flag is true when there are any) */
+export interface TxnDetail extends Omit<TxnListItem, 'split'> {
   identifier: string | null;
   source: string;
   annotations: Record<string, unknown> | null;
@@ -379,6 +386,8 @@ export interface TxnDetail extends TxnListItem {
   aiSuggestion: { categoryId: number | null; confidence: number; reason: string | null; model: string } | null;
   /** the events this row is tagged into */
   events: Array<{ id: number; name: string }>;
+  /** the parts of a split transaction (hub/splits.ts), or null */
+  split: SplitPartView[] | null;
 }
 
 export function transactionDetail(db: Db, id: number): TxnDetail | null {
@@ -424,6 +433,7 @@ export function transactionDetail(db: Db, id: number): TxnDetail | null {
     links,
     aiSuggestion: ai ? { categoryId: ai.category_id, confidence: ai.confidence, reason: ai.reason, model: ai.model } : null,
     events: eventsOfTxn(db, id),
+    split: splitOf(db, id),
   };
 }
 

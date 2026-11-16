@@ -48,6 +48,7 @@ import { type EgressContext, MODEL_LABELS, MODEL_LABELS_HE, bankMerchantIds, gua
 import { AiError, type AiProvider, type ReplyFormat } from './provider.js';
 import { getSetting } from './settings.js';
 import { errorSummary } from '../errors.js';
+import { SPLIT_CATEGORY, SPLIT_JOIN, allocateSplit, splitShare, splitsByTxn } from '../hub/splits.js';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -264,12 +265,16 @@ function spendSummary(db: Db, a: Record<string, unknown>, today: string, ctx: To
   let paidBack = 0;
   const unknown = new UnknownCurrency();
   const now = { total: 0, count: 0 };
+  // split transactions (hub/splits.ts): each part counts in its own category
+  const splits = splitsByTxn(db);
   for (const month of withCurrent ? [...full, current] : full) {
     const isCurrent = month === current;
     for (const r of classifyMonthRows(db, month)) {
       if (!(buckets as Set<string>).has(r.bucket)) continue;
       const t = r.t;
-      if (cat && !cat.ids.has(t.categoryId)) continue;
+      const parts = splits.get(t.id);
+      const pieces = (parts ? allocateSplit(r.amount, parts) : [{ categoryId: t.categoryId, amount: r.amount }]).filter((p) => !cat || cat.ids.has(p.categoryId));
+      if (!pieces.length) continue;
       const unknownCur = currencyUnknown(t.source, t.originalCurrency);
       if (!unknownCur && !currencyOk(currency, t.originalCurrency)) continue;
       const c = t.categoryId === null ? undefined : cats.get(t.categoryId);
@@ -278,7 +283,9 @@ function spendSummary(db: Db, a: Record<string, unknown>, today: string, ctx: To
         name = modelName({ merchantName: t.merchantId === null ? null : merchants.get(t.merchantId), descriptions: [t.descriptionRaw, t.descriptionNorm], kind: t.kind, categoryKey: c?.key ?? null, categoryName: c?.en, amount: t.amountIls, onCard: accTypes.get(t.accountId) === 'credit_card', merchantOnBank: t.merchantId !== null && onBank.has(t.merchantId) });
         if (needle && ![name, c?.en ?? '', c?.he ?? ''].some((s) => s.toLowerCase().includes(needle))) continue;
       }
-      const spend = -r.amount; // purchase minus its refunds; a paid-back row is positive money in, so it reduces
+      // purchase minus its refunds (only the parts in the asked category of a split one); a paid-back row is positive
+      // money in, so it reduces
+      const spend = -pieces.reduce((a, p) => a + p.amount, 0);
       if (unknownCur && currency !== 'all') {
         // RiseUp history without a currency: counted as ILS, never as foreign; reported apart either way
         if (!isCurrent) unknown.add(month, spend);
@@ -296,11 +303,14 @@ function spendSummary(db: Db, a: Record<string, unknown>, today: string, ctx: To
       pm.total += spend;
       pm.count++;
       if (groupBy === 'category') {
-        const k = c ? c.key : 'uncategorised';
-        const g = groups.get(k) ?? { name: c?.en ?? UNCATEGORISED.en, he: c?.he ?? UNCATEGORISED.he, total: 0, count: 0 };
-        g.total += spend;
-        g.count++;
-        groups.set(k, g);
+        for (const p of pieces) {
+          const pc = p.categoryId === null ? undefined : cats.get(p.categoryId);
+          const k = pc ? pc.key : 'uncategorised';
+          const g = groups.get(k) ?? { name: pc?.en ?? UNCATEGORISED.en, he: pc?.he ?? UNCATEGORISED.he, total: 0, count: 0 };
+          g.total += -p.amount;
+          g.count++;
+          groups.set(k, g);
+        }
       } else if (groupBy === 'merchant') {
         const k = name!.toLowerCase();
         const g = groups.get(k) ?? { name: name!, total: 0, count: 0 };
@@ -478,7 +488,7 @@ export const CHAT_TOOLS: ToolSpec[] = [
       if (dateOk(from) && dateOk(to)) {
         const rows = db.$client
           .prepare(
-            `select t.category_id id, sum(t.amount_ils) s, count(*) n from "transaction" t
+            `select ${SPLIT_CATEGORY} id, sum(${splitShare('t.amount_ils')}) s, count(*) n from "transaction" t ${SPLIT_JOIN}
              where t.status = 'completed' and t.excluded = 0 and t.amount_ils < 0 and coalesce(t.kind,'') <> 'savings' and t.txn_date between ? and ?
              group by 1 order by s`,
           )

@@ -120,6 +120,13 @@
       "when": 1794464873137,
       "tag": "0016_bouncy_mysterio",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1794835239053,
+      "tag": "0017_short_psynapse",
+      "breakpoints": true
     }
   ]
 }

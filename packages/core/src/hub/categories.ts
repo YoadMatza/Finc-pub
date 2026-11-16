@@ -4,6 +4,7 @@ import { groupTargets } from './targets.js';
 import { daysInMonth } from '../engine/cashflow.js';
 import { currentMonth } from '../riseup/client.js';
 import { todayLocal } from './overview.js';
+import { SPLIT_CATEGORY, SPLIT_JOIN, splitShare } from './splits.js';
 
 export interface CategoryView {
   id: number;
@@ -52,14 +53,15 @@ export function categoriesOverview(db: Db, monthArg?: string): CategoriesOvervie
   const cats = c.prepare('select * from category order by sort_order, id').all() as Array<Record<string, unknown>>;
   const sums = c
     .prepare(
-      `select t.category_id cid, t.cashflow_month mo, count(*) n, sum(${NET}) v from "transaction" t
+      // a split transaction counts in each of its parts' categories (hub/splits.ts)
+      `select ${SPLIT_CATEGORY} cid, t.cashflow_month mo, count(*) n, sum(${splitShare(NET)}) v from "transaction" t ${SPLIT_JOIN}
        where t.status = 'completed' and t.excluded = 0 and t.cashflow_month in (${months.map(() => '?').join(',')}) group by 1, 2`,
     )
     .all(...months) as Array<{ cid: number | null; mo: string; n: number; v: number }>;
   const tops = c
     .prepare(
-      `select t.category_id cid, t.merchant_id mid, coalesce(m.name, t.description_raw) name, count(*) n, sum(${NET}) v from "transaction" t left join merchant m on m.id = t.merchant_id
-       where t.status = 'completed' and t.excluded = 0 and t.cashflow_month = ? group by 1, 2, 3 order by abs(sum(${NET})) desc`,
+      `select ${SPLIT_CATEGORY} cid, t.merchant_id mid, coalesce(m.name, t.description_raw) name, count(*) n, sum(${splitShare(NET)}) v from "transaction" t ${SPLIT_JOIN} left join merchant m on m.id = t.merchant_id
+       where t.status = 'completed' and t.excluded = 0 and t.cashflow_month = ? group by 1, 2, 3 order by abs(sum(${splitShare(NET)})) desc`,
     )
     .all(month) as Array<{ cid: number | null; mid: number | null; name: string; n: number; v: number }>;
 

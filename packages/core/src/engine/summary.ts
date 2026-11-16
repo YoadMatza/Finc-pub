@@ -9,6 +9,7 @@ import type { Db } from '../db/db.js';
 import { account, category, installmentPlan, link, recurringStream, transactions } from '../db/schema.js';
 import { type ProjectedSlice, projectRemainingSlices } from './installments.js';
 import { type ExpectedSlot, expectedSlots } from './recurring.js';
+import { allocateSplit, splitsByTxn } from '../hub/splits.js';
 
 export type View = 'purchase' | 'billing';
 
@@ -150,6 +151,11 @@ export function monthSummary(db: Db, month: string, view: View = 'purchase'): Mo
     b.count++;
     b.sum += amount;
   };
+  // split transactions (hub/splits.ts): their amount goes to their parts' categories, in proportion
+  const splits = splitsByTxn(
+    db,
+    classified.filter((r) => r.bucket !== 'excluded' && r.t.amountIls < 0).map((r) => r.t.id),
+  );
 
   for (const { t, netted, amount, bucket } of classified) {
     if (bucket === 'excluded') {
@@ -161,11 +167,14 @@ export function monthSummary(db: Db, month: string, view: View = 'purchase'): Mo
     s.integrity.nonExcludedSum += t.amountIls;
     const pa = perAccount.get(t.accountId) ?? { income: 0, out: 0, count: 0 };
     pa.count++;
-    const pc = perCategory.get(t.categoryId) ?? { count: 0, sum: 0, paidBack: 0 };
-    pc.count++;
-    pc.sum += amount;
-    if (t.kind === 'paid_back') pc.paidBack += amount;
-    perCategory.set(t.categoryId, pc);
+    const parts = splits.get(t.id);
+    for (const { categoryId, amount: share } of parts ? allocateSplit(amount, parts) : [{ categoryId: t.categoryId, amount }]) {
+      const pc = perCategory.get(categoryId) ?? { count: 0, sum: 0, paidBack: 0 };
+      pc.count++;
+      pc.sum += share;
+      if (t.kind === 'paid_back') pc.paidBack += share;
+      perCategory.set(categoryId, pc);
+    }
     if (bucket === 'income') {
       add(s.income, amount);
       pa.income += amount;
