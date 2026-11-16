@@ -137,7 +137,8 @@ export function buildRecurringStreams(db: Db, opts: { today?: string } = {}): Re
       res.groupsExamined++;
       const useFxForCluster = fxMajority(members) !== null;
       const amountOf = (m: TxnRow): number => Math.abs(useFxForCluster ? (m.originalAmount ?? m.amountIls) : m.amountIls);
-      chainPriceSteps(clusterByAmount(members, amountOf), amountOf).forEach((c, i) => {
+      // a small price change stays in the old amount cluster: split it off first (splitPriceTail), then chain
+      chainPriceSteps(clusterByAmount(members, amountOf).flatMap((c) => splitPriceTail(c, amountOf)), amountOf).forEach((c, i) => {
         if (c.steps.reduce((n, st) => n + st.length, 0) >= 2) clustered.set(`${key}|${i}`, c);
       });
     }
@@ -378,6 +379,31 @@ function fxMajority(rows: TxnRow[]): string | null {
   const fx = majority(rows.map((m) => m.originalCurrency).filter((c) => c && c !== 'ILS') as string[]);
   if (fx === null) return null;
   return rows.filter((m) => m.originalCurrency === fx).length / rows.length >= 0.8 ? fx : null;
+}
+
+/**
+ * A price change too small to leave its amount cluster (under ~15%, gaps plan 1.8 follow-up): the newest charges sit
+ * outside the cluster's amount tolerance, so the stream would drop them. When the cluster's latest charges, and only
+ * they, are outside the tolerance, all on the same side and one price among themselves (within 5%), they are split off
+ * as a cluster of their own; chainPriceSteps then joins them back as the stream's next price step if they come on
+ * schedule. One odd charge in the middle of the history is not a suffix, so it splits nothing.
+ */
+export function splitPriceTail(rows: TxnRow[], amountOf: (r: TxnRow) => number): TxnRow[][] {
+  if (rows.length < 3) return [rows];
+  const sorted = [...rows].sort((a, b) => a.txnDate.localeCompare(b.txnDate));
+  const model = modelAmounts(sorted.map(amountOf));
+  if (!model) return [rows];
+  const expected = Math.abs(model.expected);
+  const outside = (r: TxnRow): boolean => Math.abs(amountOf(r) - expected) > model.tolerance;
+  let k = sorted.length;
+  while (k > 0 && outside(sorted[k - 1]!)) k--;
+  const head = sorted.slice(0, k);
+  const tail = sorted.slice(k);
+  if (!tail.length || head.length < 2 || tail.length >= head.length) return [rows];
+  const amounts = tail.map(amountOf);
+  if (Math.max(...amounts) > Math.min(...amounts) * 1.05) return [rows];
+  if (!amounts.every((a) => a > expected) && !amounts.every((a) => a < expected)) return [rows];
+  return [head, tail];
 }
 
 /**

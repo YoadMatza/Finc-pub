@@ -185,6 +185,54 @@ describe('a price change does not break a stream (gaps plan 1.8)', () => {
   });
 });
 
+describe('a small price rise stays in the stream (gaps plan 1.8, follow-up)', () => {
+  const bill = (date: string, amount: number) => row(date, amount, 'DEMO STREAMING');
+  const months = ['2026-03', '2026-04', '2026-05', '2026-06', '2026-07', '2026-08'];
+  const tied = (id: number) => db.select().from(transactions).where(eq(transactions.recurringStreamId, id)).all().map((t) => t.amountIls).sort((a, b) => a - b);
+
+  it('one charge 8% higher on the expected day stays in the stream, which still expects the old price', () => {
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: [...months.map((m) => bill(`${m}-07`, -10000)), bill('2026-09-07', -10800)] });
+    prep();
+    buildRecurringStreams(db, { today: '2026-09-20' });
+    const streams = db.select().from(recurringStream).all();
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toMatchObject({ expectedAmount: -10000, nextExpectedDate: '2026-10-07', occurrences: 7 });
+    expect(tied(streams[0]!.id)).toEqual([-10800, -10000, -10000, -10000, -10000, -10000, -10000]);
+  });
+
+  it('after two charges 9% higher the stream expects the new price, still one stream', () => {
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: [...months.map((m) => bill(`${m}-07`, -10000)), bill('2026-09-07', -10900), bill('2026-10-07', -10900)] });
+    prep();
+    buildRecurringStreams(db, { today: '2026-10-20' });
+    buildRecurringStreams(db, { today: '2026-10-20' });
+    const streams = db.select().from(recurringStream).all();
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toMatchObject({ expectedAmount: -10900, nextExpectedDate: '2026-11-07', occurrences: 8 });
+  });
+
+  it('a bill that varies every month is left as it was (one stream, its usual range)', () => {
+    const amounts = [-30000, -42000, -28000, -36000, -33000, -39000, -31000];
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: amounts.map((a, i) => row(`2026-0${3 + i}-20`, a, 'חברת החשמל דמו')) });
+    prep();
+    buildRecurringStreams(db, { today: '2026-09-25' });
+    const s = db.select().from(recurringStream).all();
+    expect(s).toHaveLength(1);
+    // the variable model keeps the months within its range (the ₪420 month is outside it), before and after this fix
+    expect(tied(s[0]!.id)).toHaveLength(6);
+  });
+
+  it('one odd charge in the middle of the history does not split the stream', () => {
+    const rows = months.map((m) => bill(`${m}-07`, -10000));
+    rows[2] = bill('2026-05-07', -10900);
+    ingestBatch(db, { source: 'scraper:max', runId: null, accountId: acc, rows: [...rows, bill('2026-09-07', -10000)] });
+    prep();
+    buildRecurringStreams(db, { today: '2026-09-20' });
+    const s = db.select().from(recurringStream).all();
+    expect(s).toHaveLength(1);
+    expect(s[0]).toMatchObject({ expectedAmount: -10000, nextExpectedDate: '2026-10-07' });
+  });
+});
+
 describe('stream hygiene', () => {
   it('two hits a year apart form nothing, Bit transfers never form a stream, and a quiet candidate is dropped', () => {
     ingestBatch(db, {
