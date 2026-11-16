@@ -98,6 +98,17 @@ These are documented design limits, not vulnerabilities (but ideas to improve th
 - Anyone signed in can use "Lock everything", including a thief; the worst it does is lock the owner out until they are
   home.
 
+## Dependency advisories we accept
+
+`pnpm audit` is part of every release. Fixes in transitive dependencies are forced with `overrides` in
+`pnpm-workspace.yaml`. Two advisories have no usable fix and are accepted:
+
+- **extract-zip** (symlink path traversal, two advisories): used only by puppeteer's browser downloader. finc never
+  downloads a browser: the Docker image uses Debian's Chromium (`PUPPETEER_SKIP_DOWNLOAD`). No fixed release exists.
+- **zod 3 inside chromium-bidi** (memory exhaustion on oversized input): chromium-bidi is puppeteer's WebDriver BiDi
+  layer; finc drives Chromium over the Chrome DevTools Protocol, so it does not run. Every fixed zod is 4.x, which
+  chromium-bidi does not support. finc's own code uses a fixed zod 4.
+
 ## Hardening your own installation
 
 - Use a long master password and keep it in a password manager; keep the Android signing keystore and the backup pin

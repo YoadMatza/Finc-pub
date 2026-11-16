@@ -21,6 +21,10 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
 - The worker image runs Node 26 and installs pnpm with npm (Node 25+ has no corepack). CI tests Node 24 and 26.
 
 ### Fixed
+- Security research P2 round: bank-side refunds are no longer hidden automatically, the AI categorizer cannot be
+  steered into hiding a merchant, scraper browser profiles never save passwords, the dump report is masked, the hub
+  listens on IPv4 TCP only, and Caddy runs unprivileged on a read-only filesystem.
+- Transitive dependency advisories: uuid, basic-ftp and esbuild forced to fixed versions; two accepted (SECURITY.md).
 - `finc backup nas setup` could hand out an unreadable SSH key (about 1 in 256; an ssh2 bug), now checked and remade.
 
 ## [0.8.13] - 2026-11-14

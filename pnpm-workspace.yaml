@@ -4,3 +4,12 @@ packages:
 onlyBuiltDependencies:
   - puppeteer
   - esbuild
+# Security fixes in transitive dependencies (security research P3-04). Each is checked by a test or a command;
+# the advisories left (zod 3 inside chromium-bidi, extract-zip) are accepted in SECURITY.md.
+overrides:
+  # exceljs pins uuid 8; 11.1.1+ fixes the buffer bounds check (exceljs uses v4 only). Checked by the xlsx import tests.
+  exceljs>uuid: 11.1.1
+  # puppeteer's proxy agent (ftp:// proxy URLs only, which finc never uses) pins basic-ftp 5
+  get-uri>basic-ftp: 6.2.4
+  # drizzle-kit's loader pins esbuild 0.18 (dev server CORS advisory; dev only). Checked by db:generate.
+  '@esbuild-kit/core-utils>esbuild': 0.25.12
