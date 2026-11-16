@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
+import { BillCalendarView } from '../components/BillCalendar';
 import { api, qs } from '../api';
 import { MonthNav, useMonth } from '../components/MonthNav';
-import { Amount, Card, Empty, ErrorBox, Row, Spinner } from '../components/ui';
+import { Amount, Card, Chip, Empty, ErrorBox, Row, Spinner } from '../components/ui';
 import { money, shortDate } from '../format';
 import { type Key, useI18n } from '../i18n';
 import type { RecurringOverview, StreamView } from '../types';
@@ -19,6 +20,19 @@ export function Recurring() {
   const q = useQuery({ queryKey: ['recurring', month], queryFn: () => api.get<RecurringOverview>(`/api/recurring${qs({ month })}`) });
   const qc = useQueryClient();
   const nav = useNavigate();
+  // List / Calendar (bill calendar, wave 5); kept in the URL so the back button and a shared link keep it
+  const [params, setParams] = useSearchParams();
+  const view = params.get('view') === 'calendar' ? 'calendar' : 'list';
+  const tabs = (
+    <div className="flex gap-2">
+      <Chip on={view === 'list'} onClick={() => setParams((p) => (p.delete('view'), p), { replace: true })}>
+        {t('rec_tab_list')}
+      </Chip>
+      <Chip on={view === 'calendar'} onClick={() => setParams((p) => (p.set('view', 'calendar'), p), { replace: true })}>
+        {t('rec_tab_calendar')}
+      </Chip>
+    </div>
+  );
   const setState = useMutation({
     mutationFn: (p: { id: number; state: string }) => api.post(`/api/recurring/${p.id}/state`, { state: p.state }),
     onSuccess: () => {
@@ -27,6 +41,16 @@ export function Recurring() {
       void qc.invalidateQueries({ queryKey: ['review'] });
     },
   });
+  if (view === 'calendar')
+    return (
+      <div className="flex flex-col gap-3">
+        <header className="flex flex-wrap items-center gap-3 justify-between">
+          <MonthNav month={month} onChange={setMonth} />
+          {tabs}
+        </header>
+        <BillCalendarView month={month} />
+      </div>
+    );
   if (q.isPending) return <Spinner />;
   if (q.error) return <ErrorBox error={q.error} onRetry={() => q.refetch()} />;
   const d = q.data;
@@ -71,6 +95,7 @@ export function Recurring() {
     <div className="flex flex-col gap-3">
       <header className="flex flex-wrap items-center gap-3 justify-between">
         <MonthNav month={month} onChange={setMonth} />
+        {tabs}
         <span className="text-sm text-muted">
           {t('fixed_expenses')} <Amount value={d.audit.monthlyFixed} decimals={0} tone="muted" /> {t('monthly')}
         </span>

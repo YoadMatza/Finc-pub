@@ -524,6 +524,36 @@ export interface PlanView {
   thisMonth: { status: 'matched' | 'upcoming' | 'missing' | 'none'; n: number | null; txnId: number | null };
 }
 
+/** GET /api/calendar (core hub/calendar.ts) */
+export interface CalendarItem {
+  date: string;
+  kind: 'fixed' | 'income' | 'installment' | 'card_bill';
+  name: string;
+  amount: number;
+  expected?: number;
+  status: 'paid' | 'upcoming' | 'missing';
+  via: 'card' | 'bank';
+  streamId?: number;
+  planId?: number;
+  accountId?: number;
+  txnId?: number;
+  count?: number;
+}
+export interface CalendarDay {
+  date: string;
+  items: CalendarItem[];
+  out: number;
+  in: number;
+}
+export interface BillCalendar {
+  month: string;
+  today: string;
+  isCurrentMonth: boolean;
+  days: CalendarDay[];
+  totals: { out: number; in: number; paidOut: number; toComeOut: number; toComeIn: number };
+  balance?: { start: number; asOf: string; points: Array<{ date: string; balance: number }>; lowest: { date: string; balance: number } };
+}
+
 export interface RecurringOverview {
   month: string;
   streams: StreamView[];

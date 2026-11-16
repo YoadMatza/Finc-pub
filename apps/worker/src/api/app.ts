@@ -94,6 +94,7 @@ import {
   recentRuns,
   recentAlerts,
   recurringOverview,
+  billCalendar,
   registerDevice,
   renameDevice,
   resolveCategory,
@@ -1051,6 +1052,11 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   api.get('/recurring', (c) => {
     const q = z.object({ month: monthQ, states: z.string().optional() }).parse(c.req.query());
     return c.json(recurringOverview(state.db, q.month, q.states ? q.states.split(',') : undefined));
+  });
+  // bill calendar (wave 5): the month's fixed money by day, with the bank balance line for the current month
+  api.get('/calendar', (c) => {
+    const q = z.object({ month: monthQ }).parse(c.req.query());
+    return c.json(billCalendar(state.db, q.month ?? limitMonthNow()));
   });
   api.get('/categories', (c) => {
     const q = z.object({ month: monthQ }).parse(c.req.query());
