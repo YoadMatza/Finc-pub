@@ -161,7 +161,7 @@ function walkError(e: Error, depth: number, seen: WeakSet<object>): Error {
   return out;
 }
 
-/** "****6150" style masking for account/card numbers in any user-facing output. */
+/** "****1234" style masking for account/card numbers in any user-facing output. */
 export function maskNumber(s: string | number | undefined | null, keep = 4): string {
   if (s === undefined || s === null) return '';
   const str = String(s).replace(/\s+/g, '');

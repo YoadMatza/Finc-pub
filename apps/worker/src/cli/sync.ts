@@ -144,7 +144,7 @@ export function registerSyncCommands(program: Command): void {
   const report = program.command('report').description('Read-only reports');
   report
     .command('dump [file]')
-    .description('Anonymized data-shape report over a raw scraper dump (default: newest in data/dumps)')
+    .description('Masked data-shape report over a raw scraper dump (default: newest in data/dumps)')
     .action((file?: string) => {
       const target = file ?? newestDump();
       if (!target) throw new Error('no dump files yet; run finc spike <institution>');

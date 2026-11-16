@@ -183,7 +183,7 @@ Days apart is never the only test. The refund/cancellation matching, recurring-p
 | **Amount** | Exact > within tolerance > partial (refund smaller than purchase); sums (one refund = several purchases, or a card cycle total = the bank debit) | ₪3,410.5 bank debit = sum of the Max cycle |
 | **Original currency** | Match on the $/€ amount when the shekel amount drifts | $15 every month even though ₪54/55/57 differ |
 | **Dates** | Proximity weighted by type: refund up to 90 days, monthly stream ±7 days, transfer ±3 days | — |
-| **Account / card** | Same card is a strong signal; own-account pairs signal a transfer | Refund credited to the same card ****6150 |
+| **Account / card** | Same card is a strong signal; own-account pairs signal a transfer | Refund credited to the same card ****1234 |
 | **Reference ids** | Bank reference number (אסמכתא), authorization id, installment plan id, cheque number | Pending→completed follows the same auth id |
 | **Keywords and type** | זיכוי, ביטול, החזר, refund, reversal, העברה, transaction type from the scraper | — |
 | **Structure** | Installment n/N, the stream's history (usual day and amount), card billing cycle | Credit against an installment plan |

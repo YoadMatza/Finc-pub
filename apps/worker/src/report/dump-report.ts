@@ -1,10 +1,12 @@
 /**
- * Anonymized "what does the real data look like" report over a raw scraper dump.
- * Safe to paste into chat: account numbers and identifiers are masked, memos that may
- * carry names are hidden, and only merchant / amount / date / type / status survive.
+ * Masked "what does the real data look like" report over a raw scraper dump (security research P2-11).
+ * Account numbers are masked, balances and totals are left out, error text is cleaned (cleanErrorText), memos that
+ * may carry names are hidden, and every description goes through `modelName`, the same rule that decides what the AI
+ * may see: bank-side rows and person-to-person payments show only a generic label, card merchants lose digit runs.
+ * Amounts, dates, types and statuses stay, so read it before sharing it anywhere.
  */
 import { readFileSync } from 'node:fs';
-import { type ScraperAccount, type ScraperTransaction, fromScraperAccount, isoToLocalDate, maskNumber } from '@finc/core';
+import { type ScraperAccount, type ScraperTransaction, cleanErrorText, fromScraperAccount, institutionSpec, isoToLocalDate, maskNumber, modelName } from '@finc/core';
 
 interface Dump {
   success: boolean;
@@ -22,15 +24,19 @@ export function safeMemo(memo: string | null | undefined): string {
   return SAFE_MEMO.test(m) ? m : `[memo ${m.length} chars]`;
 }
 
-function fmt(n: number): string {
-  return (n / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** The name a sample row may show: never a raw description. Unknown institutions count as bank-side (the stricter rule). */
+export function sampleName(t: Pick<ScraperTransaction, 'description' | 'chargedAmount'>, onCard: boolean): string {
+  return modelName({ merchantName: t.description, descriptions: [t.description], amount: t.chargedAmount, onCard, merchantOnBank: false });
 }
 
 export function dumpReport(file: string): string {
   const dump = JSON.parse(readFileSync(file, 'utf8')) as Dump;
+  const name = file.split(/[\\/]/).pop() ?? '';
+  const onCard = institutionSpec(name.split('-')[0] ?? '')?.kind === 'card';
   const out: string[] = [];
-  out.push(`# Dump report: ${file.split(/[\\/]/).pop()}`);
-  out.push(`success: ${dump.success}${dump.errorType ? `  errorType: ${dump.errorType}  message: ${(dump.errorMessage ?? '').slice(0, 200)}` : ''}`);
+  out.push(`# Dump report: ${name}`);
+  out.push('masked, but it still shows amounts and dates: read it before sharing it');
+  out.push(`success: ${dump.success}${dump.errorType ? `  errorType: ${dump.errorType}  message: ${cleanErrorText(dump.errorMessage ?? '', 200)}` : ''}`);
   for (const acc of dump.accounts ?? []) {
     const rows = fromScraperAccount(acc);
     const txns = acc.txns;
@@ -50,11 +56,10 @@ export function dumpReport(file: string): string {
     const sameDayDupes = [...dupKeys.values()].filter((n) => n > 1).length;
 
     out.push('');
-    out.push(`## account ${maskNumber(acc.accountNumber)}  balance: ${acc.balance === undefined ? 'n/a' : acc.balance}${acc.balanceDate ? ` @ ${acc.balanceDate.slice(0, 10)}` : ''}${acc.cardType ? `  cardType: ${acc.cardType}` : ''}`);
+    out.push(`## account ${maskNumber(acc.accountNumber)}  balance: ${acc.balance === undefined || acc.balance === null ? 'n/a' : 'present'}${acc.balanceDate ? ` @ ${acc.balanceDate.slice(0, 10)}` : ''}${acc.cardType ? `  cardType: ${acc.cardType}` : ''}`);
     out.push(`transactions: ${txns.length}   date range: ${dates[0] ?? '-'} → ${dates[dates.length - 1] ?? '-'}`);
     out.push(`status: ${show(byStatus)}   type: ${show(byType)}   currency: ${show(byCurrency)}`);
     out.push(`identifier present: ${withId}/${txns.length}   credits (positive): ${credits.length}   installment rows: ${installments.length}   FX rows: ${fx.length}   same-day identical groups: ${sameDayDupes}`);
-    out.push(`sum of charged amounts: ${fmt(rows.reduce((s, r) => s + r.amount, 0))}`);
 
     const rawKeys = new Set<string>();
     for (const t of txns) {
@@ -78,7 +83,7 @@ export function dumpReport(file: string): string {
       seen.add(t);
       const inst = t.installments ? `${t.installments.number}/${t.installments.total}` : '';
       out.push(
-        `  ${t.description} | ${isoToLocalDate(t.date)} | ${t.processedDate ? isoToLocalDate(t.processedDate) : ''} | ${t.chargedAmount} ${t.chargedCurrency ?? 'ILS'} | ${t.originalAmount} ${t.originalCurrency} | ${t.status} | ${t.type} | ${inst} | ${safeMemo(t.memo)}`,
+        `  ${sampleName(t, onCard)} | ${isoToLocalDate(t.date)} | ${t.processedDate ? isoToLocalDate(t.processedDate) : ''} | ${t.chargedAmount} ${t.chargedCurrency ?? 'ILS'} | ${t.originalAmount} ${t.originalCurrency} | ${t.status} | ${t.type} | ${inst} | ${safeMemo(t.memo)}`,
       );
     }
   }
