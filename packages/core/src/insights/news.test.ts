@@ -71,6 +71,10 @@ describe('the AI summary is checked by code before it is shown', () => {
     expect(adviceIn('Investors should consider trimming.')).toBe('should_act');
     expect(adviceIn('The stock looks like a buy.')).toBe('is_a_buy');
     expect(adviceIn('Analysts raised their price target.')).toBe('target');
+    // a price-target sentence is left out and the rest stands; finc never shows the target
+    const withTarget = checkNewsSummary(answer([...news, { text: 'An analyst raised the price target.', cites: ['h1'] }]), sent, ids);
+    expect(withTarget.ok && withTarget.sentences.some((x) => /target/i.test(x.text))).toBe(false);
+    expect(withTarget.ok && withTarget.sentences).toHaveLength(4);
   });
 
   it('refuses advice, links, invented numbers, unknown citations, a bad shape', () => {

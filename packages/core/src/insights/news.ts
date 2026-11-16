@@ -201,6 +201,9 @@ export function checkNewsSummary(text: string, sent: { user: string }, ids: { he
     if (!t || t.length > SENTENCE_MAX) return { ok: false, check: 'sentence_length' };
     if (/https?:|www\.|<|>|\]\(/i.test(t)) return { ok: false, check: 'link' };
     const advice = adviceIn(t);
+    // an analyst's price target in the news is a third party's prediction, not finc's advice: that sentence is left out
+    // (finc never shows a target) and the rest stands; any other advice still refuses the whole answer (live 2026-11-16)
+    if (advice === 'target') continue;
     if (advice) return { ok: false, check: 'advice', pattern: advice };
     // ids the data did not have are dropped (a model writes "H1" or cites a section name); a sentence left with no known
     // id is refused, so every shown sentence still points at something that was sent (live 2026-11-16)
