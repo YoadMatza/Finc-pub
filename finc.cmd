@@ -2,6 +2,9 @@
 rem finc CLI launcher. While the Docker worker runs, database commands run inside the container
 rem (two writers across the Docker Desktop file boundary corrupted SQLite once). `spike` stays on the host.
 setlocal
+rem docker and node are found on PATH only, never in the current folder, so a planted docker.bat or node.exe there
+rem cannot run (security research P3-01).
+set "NoDefaultCurrentDirectoryInExePath=1"
 rem `backup restore` always runs on the host and refuses while the worker container runs.
 set "CMD1=%~1"
 set "CMD2=%~2"

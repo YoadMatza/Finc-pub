@@ -58,16 +58,17 @@ export function createProvider(cfg: AiConfig): AiProvider {
   scrubSecretEnv(); // defence in depth: the only key an API call can carry is cfg.apiKey from the vault
   const f = cfg.fetchImpl ?? fetch;
   const timeout = cfg.timeoutMs ?? 120_000;
-  // A cloud key only ever travels to its own vendor (audit M1): a redirected base URL is refused, not followed.
+  // A cloud key only ever travels to its own vendor (audit M1), over https (security research P3-01): a base URL with
+  // another origin, http://api.openai.com included, is refused, not followed.
   if (cfg.provider !== 'local' && cfg.baseUrl) {
-    const expected = new URL(AI_DEFAULTS[cfg.provider].baseUrl).host;
-    let host = '';
+    const expected = new URL(AI_DEFAULTS[cfg.provider].baseUrl).origin;
+    let origin = '';
     try {
-      host = new URL(cfg.baseUrl).host;
+      origin = new URL(cfg.baseUrl).origin;
     } catch {
       /* not a URL */
     }
-    if (host !== expected) throw new AiError(`the ${cfg.provider} key is sent to ${expected} only; base URL ${cfg.baseUrl} is refused`);
+    if (origin !== expected) throw new AiError(`the ${cfg.provider} key is sent to ${expected} only; base URL ${cfg.baseUrl} is refused`);
   }
   if (cfg.provider === 'anthropic') {
     if (!cfg.apiKey) throw new AiError('Anthropic needs an API key in the vault: finc vault set ai_anthropic');

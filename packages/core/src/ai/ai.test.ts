@@ -124,6 +124,12 @@ describe('providers', () => {
     expect(() => createProvider({ provider: 'openai', model: '' })).toThrow(/API key/);
     expect(createProvider({ provider: 'local', model: '', baseUrl: 'http://localhost:11434/v1' }).model).toBe('llama3.1');
   });
+  it('a cloud key goes to its vendor over https only (security research P3-01)', () => {
+    expect(() => createProvider({ provider: 'openai', model: '', apiKey: 'k', baseUrl: 'http://api.openai.com/v1' })).toThrow(/refused/);
+    expect(() => createProvider({ provider: 'anthropic', model: '', apiKey: 'k', baseUrl: 'http://api.anthropic.com' })).toThrow(/refused/);
+    expect(() => createProvider({ provider: 'openai', model: '', apiKey: 'k', baseUrl: 'https://api.openai.com.evil.example/v1' })).toThrow(/refused/);
+    expect(createProvider({ provider: 'openai', model: '', apiKey: 'k', baseUrl: 'https://api.openai.com/v1' }).model).toBe('gpt-5-mini');
+  });
   it('anthropic and openai-compatible request shapes', async () => {
     const seen: Array<{ url: string; body: Record<string, unknown>; headers: Record<string, string> }> = [];
     const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {

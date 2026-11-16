@@ -84,7 +84,7 @@
 	# home-only too; registering and signing in with a passkey (/api/auth/passkey/*) stay open. Everything
 	# proxied is stamped X-Finc-Edge: public, and the worker treats such requests as untrusted whatever address
 	# they carry.
-	@private path /api/auth/login /api/auth/setup /api/devices/pairings /api/auth/passkey/enroll-code /health /runs /unlock /sync /lock
+	@private path /api/auth/login /api/auth/setup /api/devices/pairings /api/auth/passkey/enroll-code /health /whoami /runs /unlock /sync /lock
 	handle @private {
 		respond 404
 	}

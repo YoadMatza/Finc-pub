@@ -143,7 +143,7 @@ import {
   type SecurityEventInput,
 } from '@finc/core';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import type { DeviceView } from '@finc/core';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { type Context, Hono } from 'hono';
@@ -289,6 +289,11 @@ export const syncInstitutions = z.union([
 export function callerSafe(msg: string, fallback: string): string {
   if (/(^|[\s'"(])(\/[\w.-]+){2,}|\b[A-Za-z]:[\\/]/.test(msg)) return fallback;
   return cleanErrorText(msg, 200) || fallback;
+}
+
+/** The worker's answer to a CLI challenge: HMAC-SHA256 keyed by the control token (security research P3-01). */
+export function controlProof(token: string, challenge: string): string {
+  return createHmac('sha256', token).update(`finc-control:${challenge}`).digest('hex');
 }
 
 /** A yes/no query flag: "1"/"true" or "0"/"false" only; coercing made "false" true (security research P3-03). */
@@ -449,7 +454,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     await next();
     c.res.headers.set('Cache-Control', 'no-store');
   };
-  for (const p of ['/api/*', '/health', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
+  for (const p of ['/api/*', '/health', '/whoami', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
   /**
    * Writes from another site are refused for everyone, signed in or not (review of P1-06/P1-07): a page on evil.example
    * can POST blind to http://127.0.0.1:7733/api/auth/login without rebinding (Host is then allowed) and lock the PIN.
@@ -1953,6 +1958,16 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   // --- control endpoints kept for the CLI (token) and anyone with a session
   // Without a token or a session the health answer says only that the worker is up (audit C2: the full
   // payload carries balances and account names).
+  /**
+   * The worker proves it holds the control token before the CLI sends it, or the master password (security research
+   * P3-01): an HMAC of the CLI's random challenge, keyed by the token. Something else answering on 7733 cannot make it.
+   * The proof says nothing about the token, so anyone may ask.
+   */
+  app.get('/whoami', (c) => {
+    const challenge = c.req.query('challenge') ?? '';
+    if (!/^[0-9a-f]{32,128}$/.test(challenge)) return c.json({ error: 'challenge: 32 to 128 hex characters' }, 400);
+    return c.json({ proof: controlProof(opts.controlToken, challenge) });
+  });
   app.get('/health', (c) => c.json(authOf(c) === 'none' ? { ok: true, version: FINC_VERSION } : healthPayload(state)));
   app.get('/runs', requireAuth, (c) => c.json(recentRuns(state.db, Number(c.req.query('limit') ?? '20'))));
   app.post('/unlock', async (c) => {
