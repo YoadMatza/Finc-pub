@@ -6,6 +6,8 @@ import { type DbOwner, FINC_VERSION, ownerAge, readOwner, scrubSecretEnv } from 
 // Secrets come from the vault only: drop every API key / token / password this process inherited
 // from the machine's environment before any command or library can see it.
 scrubSecretEnv();
+// New files (debug dumps, failure screenshots the scraper library writes) are owner-only, as in the worker (P2-06, P2-10).
+process.umask(0o077);
 import { registerAiCommands } from './cli/ai.js';
 import { registerAlertCommands } from './cli/alerts.js';
 import { registerBackupCommands } from './cli/backup.js';

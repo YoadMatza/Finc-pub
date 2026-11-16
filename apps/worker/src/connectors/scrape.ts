@@ -40,6 +40,7 @@ import type { ScraperCredentials, ScraperOptions, ScraperScrapingResult } from '
 import puppeteer, { type Browser, type LaunchOptions, type Page } from 'puppeteer';
 import { log } from '../logger.js';
 import type { OtpProvider } from './otp.js';
+import { hardenBrowserProfile, isIsracardSignedIn, sameOrigin, urlForLog, writePrivate } from './scrape-hygiene.js';
 
 const { CompanyTypes, createScraper } = ibs;
 
@@ -154,6 +155,7 @@ export async function runScrape(db: Db | null, o: ScrapeRunOptions): Promise<Scr
     const startDate = monthsAgo(o.monthsBack);
     const profile = path.join(profilesDir(), o.institutionId);
     mkdirSync(profile, { recursive: true });
+    hardenBrowserProfile(profile); // never save a bank password in the profile (P2-06)
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
     log.info({ institution: o.institutionId, headless: !o.showBrowser, profile, startDate: startDate.toISOString().slice(0, 10) }, 'scrape: launching browser');
 
@@ -453,7 +455,7 @@ function patchBeinleumiFetch(scraper: object, institutionId: string, explore: bo
         if (!/acc_num|fibi_dates|main_balance|divTable|card-header/.test(msg) || attempt >= 3) throw e;
         // The scraper's page is still open here: record what the portal shows before we retry.
         if (page) await snapshotPage(page, `${institutionId}-fetch-fail-${attempt}`);
-        log.warn({ institution: institutionId, attempt, url: page?.url(), err: msg }, 'fetch: portal not ready; reloading and retrying');
+        log.warn({ institution: institutionId, attempt, url: page ? urlForLog(page.url()) : undefined, err: msg }, 'fetch: portal not ready; reloading and retrying');
         await page?.reload({ waitUntil: 'networkidle2', timeout: 60_000 }).catch(() => undefined);
         await wait(10_000 * attempt);
       }
@@ -550,7 +552,7 @@ async function exploreBeinleumi(page: Page, institutionId: string): Promise<void
         }
         out.pages.push({ title: `manual:${n}`, url: page.url(), text: g.text.slice(0, 60_000) });
         manualSections.push({ label: `manual:${n}`, url: page.url(), html: html.slice(0, 400_000) });
-        process.stderr.write(`recorded page ${n}: ${page.url()} (${g.text.length} chars of text, ${html.length} chars of markup)\n`);
+        process.stderr.write(`recorded page ${n}: ${urlForLog(page.url())} (${g.text.length} chars of text, ${html.length} chars of markup)\n`);
       }
       rl.close();
     }
@@ -587,7 +589,7 @@ async function exploreBeinleumi(page: Page, institutionId: string): Promise<void
         await wait(2500);
         const g = await grab();
         out.pages.push({ title: `click:${label}`, url: page.url(), text: g.text.slice(0, 20_000) });
-        log.info({ institution: institutionId, clicked: label, url: page.url(), chars: g.text.length }, 'explore: clicked and recorded');
+        log.info({ institution: institutionId, clicked: label, url: urlForLog(page.url()), chars: g.text.length }, 'explore: clicked and recorded');
         await page.goto(out.landingUrl, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
         await wait(2000);
       } catch (e) {
@@ -608,6 +610,7 @@ async function exploreBeinleumi(page: Page, institutionId: string): Promise<void
       .filter((c) => /^#\//.test(c.href) && /מט|ניירות|ני"ע|תיק|השקע|פיקדו|securit|invest|portfolio|foreign|deposit|currency/i.test(`${c.text} ${c.href}`))
       .slice(0, 8);
     for (const r of [...KNOWN_ROUTES, ...routes]) {
+      if (!sameOrigin(r.href, out.landingUrl)) continue; // never leave the bank's origin (P2-06)
       try {
         await page.goto(new URL(r.href, out.landingUrl).toString(), { waitUntil: 'networkidle2', timeout: 45_000 });
         await wait(8000); // the iframe loads its table after the shell settles
@@ -627,6 +630,7 @@ async function exploreBeinleumi(page: Page, institutionId: string): Promise<void
     for (const l of interesting) {
       try {
         const url = new URL(l.href, page.url()).toString();
+        if (!sameOrigin(url, out.landingUrl)) continue; // never leave the bank's origin (P2-06)
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 45_000 });
         await wait(2500);
         const g = await grab();
@@ -650,10 +654,11 @@ async function exploreBeinleumi(page: Page, institutionId: string): Promise<void
 async function snapshotPage(page: Page, name: string): Promise<void> {
   try {
     const base = path.join(screenshotsDir(), `${name}-${stamp()}`);
-    await page.screenshot({ path: `${base}.png` }).catch(() => undefined);
+    const shot = await page.screenshot().catch(() => undefined);
+    if (shot) writePrivate(`${base}.png`, shot);
     const html = await page.content().catch(() => '');
-    if (html) writeFileSync(`${base}.html`, html, { mode: 0o600 });
-    log.info({ url: page.url(), file: base }, 'saved page state');
+    if (html) writePrivate(`${base}.html`, html);
+    log.info({ url: urlForLog(page.url()), file: base }, 'saved page state');
   } catch {
     /* diagnostics only */
   }
@@ -701,9 +706,9 @@ function patchIsracardLogin(scraper: object, institutionId: string, headful: boo
       while (Date.now() < deadline) {
         await wait(1500);
         const url = page.url();
-        if (/isracard\.co\.il/i.test(url) && !/login/i.test(url)) break;
+        if (isIsracardSignedIn(url)) break;
       }
-      if (/login/i.test(page.url())) return { success: false, errorType: 'TIMEOUT', errorMessage: 'no manual login within 5 minutes' };
+      if (!isIsracardSignedIn(page.url())) return { success: false, errorType: 'TIMEOUT', errorMessage: 'no manual login within 5 minutes' };
       log.info({ institution: institutionId }, 'manual login detected; fetching data');
       await wait(3000);
       // Back to the services origin so the scraper's in-page fetches are same-origin.
@@ -740,10 +745,11 @@ async function captureDebugState(browser: Browser, institutionId: string): Promi
     for (const page of pages) {
       const base = path.join(screenshotsDir(), `${institutionId}-${stamp()}-debug-${i++}`);
       const url = page.url();
-      log.info({ institution: institutionId, url, file: base }, 'debug: capturing page state');
-      await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => undefined);
+      log.info({ institution: institutionId, url: urlForLog(url), file: base }, 'debug: capturing page state');
+      const shot = await page.screenshot({ fullPage: true }).catch(() => undefined);
+      if (shot) writePrivate(`${base}.png`, shot);
       const html = await page.content().catch(() => '');
-      if (html) writeFileSync(`${base}.html`, html, { mode: 0o600 });
+      if (html) writePrivate(`${base}.html`, html);
     }
   } catch (e) {
     log.warn({ err: e instanceof Error ? e.message : String(e) }, 'debug: capture failed');
