@@ -80,6 +80,9 @@ describe('the AI summary is checked by code before it is shown', () => {
     expect(bad([...good, { text: 'More at https://evil.example', cites: ['h1'] }])).toMatchObject({ ok: false, check: 'link' });
     expect(bad([...good.slice(0, 3), { text: 'Revenue rose 45% this year.', cites: ['h1'] }])).toMatchObject({ ok: false, check: 'number' });
     expect(bad([...good.slice(0, 3), { text: 'Something else happened.', cites: ['h7'] }])).toMatchObject({ ok: false, check: 'cites' });
+    // unknown ids are dropped, known ones kept (any case); a sentence left with none is refused
+    const mixed = checkNewsSummary(answer([...good.slice(0, 3), { text: 'The delay matters.', cites: ['H3', 'section-2'] }]), sent, ids);
+    expect(mixed.ok && mixed.sentences[3]!.cites).toEqual(['h3']);
     expect(bad([...good.slice(0, 3), { text: 'Uncited.', cites: [] }])).toMatchObject({ ok: false, check: 'cites' });
     expect(bad(good.slice(0, 1))).toMatchObject({ ok: false, check: 'sentence_count' });
     expect(checkNewsSummary('I cannot help with that.', sent, ids)).toMatchObject({ ok: false, check: 'not_json' });

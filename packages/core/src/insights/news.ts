@@ -202,8 +202,10 @@ export function checkNewsSummary(text: string, sent: { user: string }, ids: { he
     if (/https?:|www\.|<|>|\]\(/i.test(t)) return { ok: false, check: 'link' };
     const advice = adviceIn(t);
     if (advice) return { ok: false, check: 'advice', pattern: advice };
-    const cites = x.cites.filter((c): c is string => typeof c === 'string');
-    if (!cites.length || cites.some((c) => !known.has(c))) return { ok: false, check: 'cites' };
+    // ids the data did not have are dropped (a model writes "H1" or cites a section name); a sentence left with no known
+    // id is refused, so every shown sentence still points at something that was sent (live 2026-11-16)
+    const cites = x.cites.filter((c): c is string => typeof c === 'string').map((c) => (/^h\d+$/i.test(c.trim()) ? c.trim().toLowerCase() : c.trim())).filter((c) => known.has(c));
+    if (!cites.length) return { ok: false, check: 'cites' };
     for (const n of t.replace(/,/g, '').match(/\d+(?:\.\d+)?/g) ?? []) if (!sentDigits.includes(n)) return { ok: false, check: 'number' };
     sentences.push({ text: t, cites: [...new Set(cites)] });
   }
