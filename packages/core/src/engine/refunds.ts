@@ -113,7 +113,11 @@ export function linkRefunds(db: Db): RefundResult {
         if (left < p.credit.amountIls * 0.95) continue;
         linkedCredits.add(p.credit.id);
         remaining.set(p.debit.id, left - p.credit.amountIls);
-        const zone = zoneOf(p.score);
+        // On a bank account whoever sends the money writes the description, so wording, a shared number or a matching
+        // name cannot hide a credit by themselves (security research P2-04): only a source merchant id both rows carry
+        // links one automatically; anything else is a suggestion the owner confirms in the review inbox.
+        const scored = zoneOf(p.score);
+        const zone = scored === 'auto' && !isCard && !shareExtId(p.credit.merchantId, p.debit.merchantId) ? 'suggest' : scored;
         const full = p.credit.amountIls === Math.abs(p.debit.amountIls) || p.signals.some((s) => s.signal === 'fx' && s.score === 1);
         tx.insert(link)
           .values({ type: full ? 'cancellation' : 'refund', fromTxnId: p.credit.id, toTxnId: p.debit.id, amount: p.credit.amountIls, confidence: p.score, zone, source: 'auto', explanationJson: JSON.stringify(p.signals), createdAt: nowIso() })

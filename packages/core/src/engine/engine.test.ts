@@ -132,7 +132,7 @@ describe('refund engine', () => {
     expect(db.select().from(link).all()).toHaveLength(3);
   });
 
-  it('a returned cheque on the bank side cancels the cheque with the same number, even a day earlier', () => {
+  it('a returned cheque on the bank side is proposed against the cheque with the same number, even a day earlier', () => {
     ingestBatch(db, {
       source: 'scraper:beinleumi',
       runId: null,
@@ -141,9 +141,12 @@ describe('refund engine', () => {
     });
     assignMerchants(db);
     const r = linkRefunds(db);
-    expect(r.auto).toBe(1);
+    // bank-side descriptions are written by the sender, so a matching number is a suggestion, not a hidden credit (P2-04)
+    expect(r).toMatchObject({ auto: 0, suggest: 1 });
     const l = db.select().from(link).get()!;
     expect(l.type).toBe('cancellation');
+    expect(l.zone).toBe('suggest');
+    expect(db.select().from(transactions).where(eq(transactions.id, l.fromTxnId)).get()).toMatchObject({ kind: null, excluded: false });
     expect(db.select().from(transactions).where(eq(transactions.id, l.toTxnId)).get()?.descriptionRaw).toBe('משיכת שיק 4417021');
     expect(JSON.parse(l.explanationJson).some((s: { signal: string; score: number }) => s.signal === 'reference' && s.score === 1)).toBe(true);
   });
@@ -175,6 +178,26 @@ describe('refund engine', () => {
     expect(credits.find((c) => c.amountIls === 21500)?.kind).toBe('refund');
     expect(credits.find((c) => c.amountIls === 43750)?.kind).toBe('income');
     expect(links.filter((l) => l.decision === null)).toHaveLength(0);
+  });
+
+  it('a bank credit that copies a purchase number and says החזר stays visible income (security research P2-04)', () => {
+    ingestBatch(db, {
+      source: 'scraper:beinleumi',
+      runId: null,
+      accountId: bank,
+      rows: [
+        row({ date: '2026-09-01', amount: -180000, description: 'הוראת קבע 734125 ועד בית', identifier: 'd1' }),
+        row({ date: '2026-09-04', amount: 180000, description: 'החזר 734125 ועד בית', identifier: 'c1' }),
+      ],
+    });
+    assignMerchants(db);
+    const r = linkRefunds(db);
+    expect(r.auto).toBe(0);
+    const credit = db.select().from(transactions).where(sql`${transactions.amountIls} > 0`).get();
+    expect(credit).toMatchObject({ excluded: false });
+    expect(credit?.kind).not.toBe('refund');
+    // at most a suggestion waiting for the owner, never an automatic link
+    expect(db.select().from(link).all().every((l) => l.zone === 'suggest')).toBe(true);
   });
 
   it('two equal refunds pair with two purchases, not one', () => {
