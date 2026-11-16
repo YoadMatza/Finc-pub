@@ -443,6 +443,44 @@ export interface TrendsOverview {
   story: { months: number; variableFirst: number; variableLast: number; netSum: number } | null;
 }
 
+/** GET /api/trends/year (packages/core/src/hub/yearly.ts): amounts in agorot, positive unless named signed. */
+export interface YearMonth {
+  month: string;
+  income: number;
+  spending: number;
+  savings: number;
+  out: number;
+  net: number;
+  partial: boolean;
+  hasData: boolean;
+}
+export interface YearlyReport {
+  year: number;
+  today: string;
+  view: 'purchase' | 'billing';
+  partial: boolean;
+  empty: boolean;
+  availableYears: number[];
+  months: YearMonth[];
+  totals: { income: number; spending: number; savings: number; out: number; net: number; saved: number; savingsRate: number | null; paidBack: number; months: number };
+  best: { month: string; net: number } | null;
+  worst: { month: string; net: number } | null;
+  previous: { year: number; months: number; income: number; spending: number; saved: number } | null;
+  groups: Array<{ key: string; section: string; total: number; previous: number | null; categories: Array<{ key: string; nameHe: string; nameEn: string; total: number; previous: number | null }> }>;
+  merchants: Array<{ merchantId: number | null; name: string; total: number; count: number }>;
+  fixed: {
+    total: number;
+    streams: Array<{ id: number; name: string; frequency: string; state: string; cost: number; count: number; firstDate: string; lastDate: string; isNew: boolean; ended: boolean }>;
+    priceChanges: Array<{ streamId: number; name: string; from: number; to: number; date: string }>;
+  };
+  big: {
+    purchases: Array<{ txnId: number; date: string; name: string; amount: number }>;
+    plans: Array<{ id: number; name: string; firstDate: string; totalN: number; total: number }>;
+    events: Array<{ id: number; name: string; spent: number; net: number; firstDate: string | null; lastDate: string | null; count: number }>;
+  };
+  netWorth: { start: { date: string; total: number; assets: number; liabilities: number } | null; end: { date: string; total: number; assets: number; liabilities: number } | null };
+}
+
 export interface Health {
   version: string;
   vault: 'unlocked' | 'locked' | 'missing';

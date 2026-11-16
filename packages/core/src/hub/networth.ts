@@ -186,6 +186,41 @@ export function netWorthOverview(db: Db, opts: { today?: string } & LiveOption =
   return { today, total: assets - liabilities, assets, liabilities, lines, history, manual };
 }
 
+/**
+ * Net worth at the end of one day, rebuilt the way a history point is (the yearly report's start and end of year).
+ * Null when nothing was recorded by then (no bank balance and no manual value): card debt alone is not a net worth.
+ */
+export function netWorthAt(db: Db, date: string, opts: { today?: string } = {}): { date: string; total: number; assets: number; liabilities: number } | null {
+  const today = opts.today ?? todayLocal();
+  const accounts = db.$client.prepare('select id, type, display_name, institution_id, currency from account').all() as AccountRow[];
+  const banks = accounts.filter((a) => BANK_TYPES.has(a.type));
+  const cards = accounts.filter((a) => a.type === 'credit_card');
+  const manuals = db.select().from(manualAsset).where(eq(manualAsset.archived, false)).all();
+  const b = balancesAt(db, banks, date);
+  const m = manualAt(
+    db,
+    manuals.map((x) => x.id),
+    date,
+  );
+  if (b.size === 0 && m.size === 0) return null;
+  const o = cardOwedAt(
+    db,
+    cards.map((c) => c.id),
+    date,
+    date === today,
+  );
+  let as = 0;
+  let li = 0;
+  for (const v of b.values()) v.balance >= 0 ? (as += v.balance) : (li += -v.balance);
+  for (const v of o.values()) v >= 0 ? (li += v) : (as += -v);
+  for (const x of manuals) {
+    const v = m.get(x.id);
+    if (!v) continue;
+    x.side === 'liability' ? (li += v.value) : (as += v.value);
+  }
+  return { date, total: as - li, assets: as, liabilities: li };
+}
+
 export const MANUAL_KINDS = ['pension', 'savings', 'investment', 'property', 'cash', 'loan', 'other'] as const;
 
 export function createManual(db: Db, input: { name: string; kind: string; side?: Side; currency?: string; note?: string | null; value: number; date?: string }): ManualHolding {

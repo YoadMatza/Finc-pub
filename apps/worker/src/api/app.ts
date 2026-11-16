@@ -68,6 +68,8 @@ import {
   updateHoldingRule,
   validateParams,
   trendsOverview,
+  yearlyReport,
+  todayLocal,
   listEvents,
   createEvent,
   eventView,
@@ -1185,6 +1187,11 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   api.get('/trends', (c) => {
     const q = z.object({ months: z.coerce.number().int().min(3).max(36).optional(), sankey: monthQ, view: viewQ }).parse(c.req.query());
     return c.json(trendsOverview(state.db, { ...(q.months !== undefined ? { months: q.months } : {}), ...(q.sankey !== undefined ? { sankeyMonth: q.sankey } : {}), ...(q.view !== undefined ? { view: q.view } : {}) }));
+  });
+  // --- yearly report (wave 5): research_notes/proposals/yearly-report.md; static, built from the month summaries
+  api.get('/trends/year', (c) => {
+    const q = z.object({ year: z.coerce.number().int().min(2000).max(2100).optional(), view: viewQ }).parse(c.req.query());
+    return c.json(yearlyReport(state.db, q.year ?? Number(todayLocal().slice(0, 4)), { ...(q.view !== undefined ? { view: q.view } : {}) }));
   });
   api.get('/accounts', async (c) => c.json(accountsOverview(state.db, await liveOpt())));
   api.get('/accounts/:id/holdings', async (c) => {

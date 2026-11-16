@@ -1,19 +1,20 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Bar, Cell, ComposedChart, Line, ReferenceLine, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis } from 'recharts';
 import { api, qs } from '../api';
 import { MonthNav } from '../components/MonthNav';
 import { NetWorthCard } from '../components/NetWorthCard';
 import { Amount, Bar as Meter, Card, Chip, Empty, ErrorBox, Row, Spinner } from '../components/ui';
-import { addMonths, money, monthLabel } from '../format';
+import { addMonths, dayLabel, money, monthLabel } from '../format';
 import { type Key, useI18n } from '../i18n';
-import type { CategorySeries, SankeyNode, TrendSeries, TrendsOverview } from '../types';
+import type { CategorySeries, SankeyNode, TrendSeries, TrendsOverview, YearlyReport } from '../types';
 import { GROUP_COLOR } from './Categories';
 
 /**
  * Trends (design §6): in / out / net bars over 12 or 24 months, one line per group and per notable
- * category, a Sankey of one finished month, and the last twelve months against the year before.
+ * category, a Sankey of one finished month, and the last twelve months against the year before. The Year chip
+ * switches to the yearly report (one printable page per year).
  */
 const colorOf = (g: string) => GROUP_COLOR[g] ?? '#8b93a7';
 const TOOLTIP_STYLE = { background: '#171a21', border: '1px solid #262b36', borderRadius: 8, fontSize: 12 };
@@ -21,11 +22,31 @@ const thisMonth = () => new Date().toISOString().slice(0, 7);
 
 export function Trends() {
   const { t, lang, locale } = useI18n();
-  const [months, setMonths] = useState<12 | 24>(12);
+  const [mode, setMode] = useState<12 | 24 | 'year'>(12);
+  const months = mode === 'year' ? 12 : mode;
   const [sankeyMonth, setSankeyMonth] = useState(addMonths(thisMonth(), -1));
   const narrow = useNarrow();
-  const q = useQuery({ queryKey: ['trends', months, sankeyMonth], queryFn: () => api.get<TrendsOverview>(`/api/trends${qs({ months, sankey: sankeyMonth })}`), placeholderData: (prev) => prev });
+  const q = useQuery({ queryKey: ['trends', months, sankeyMonth], queryFn: () => api.get<TrendsOverview>(`/api/trends${qs({ months, sankey: sankeyMonth })}`), placeholderData: (prev) => prev, enabled: mode !== 'year' });
   const sk = q.data?.sankey ?? { nodes: [], links: [] };
+  const modeChips = (
+    <div className="flex gap-2 print:hidden">
+      {([12, 24] as const).map((n) => (
+        <Chip key={n} on={mode === n} onClick={() => setMode(n)}>
+          {t('trends_months_n', { n })}
+        </Chip>
+      ))}
+      <Chip on={mode === 'year'} onClick={() => setMode('year')}>
+        {t('year_tab')}
+      </Chip>
+    </div>
+  );
+  if (mode === 'year')
+    return (
+      <div className="flex flex-col gap-3">
+        <header className="flex items-center justify-between flex-wrap gap-2 print:hidden">{modeChips}</header>
+        <YearReport />
+      </div>
+    );
   if (q.isPending) return <Spinner />;
   if (q.error) return <ErrorBox error={q.error} onRetry={() => q.refetch()} />;
   const d = q.data;
@@ -37,13 +58,7 @@ export function Trends() {
   return (
     <div className="flex flex-col gap-3">
       <header className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex gap-2">
-          {([12, 24] as const).map((n) => (
-            <Chip key={n} on={months === n} onClick={() => setMonths(n)}>
-              {t('trends_months_n', { n })}
-            </Chip>
-          ))}
-        </div>
+        {modeChips}
         {d.story && (
           <span className="text-sm text-muted">
             {t('trends_story', { n: d.story.months, a: money(d.story.variableFirst, { decimals: 0 }), b: money(d.story.variableLast, { decimals: 0 }), net: money(d.story.netSum, { sign: 'auto', decimals: 0 }) })}
@@ -456,5 +471,293 @@ function FlowVertical({ s, groupName }: { s: TrendsOverview['sankey']; groupName
       {top.map((seg) => label(seg, Y_TOP, false))}
       {bottom.map((seg) => label(seg, Y_BOTTOM, true))}
     </svg>
+  );
+}
+
+/**
+ * The yearly report (research_notes/proposals/yearly-report.md): one page per year, static, every number from the
+ * month summaries (so it adds up to Now and Trends). Prints cleanly: the controls and the app's chrome hide in print.
+ */
+function YearReport() {
+  const { t, lang, locale } = useI18n();
+  const [year, setYear] = useState(() => new Date().getFullYear());
+  const q = useQuery({ queryKey: ['trends-year', year], queryFn: () => api.get<YearlyReport>(`/api/trends/year${qs({ year })}`), placeholderData: (prev) => prev });
+  const d = q.data;
+  const years = d ? [...new Set([year, ...d.availableYears])].sort((a, b) => b - a) : [year];
+  const groupName = (key: string) => (t(`group_${key}` as Key) === `group_${key}` ? key : t(`group_${key}` as Key));
+  const short = (m: string) => new Intl.DateTimeFormat(locale, { month: 'short' }).format(new Date(`${m}-01T00:00:00Z`));
+  const m0 = (v: number, sign: 'auto' | 'never' = 'never') => money(v, { sign, decimals: 0 });
+  const pct = (r: number) => `${Math.round(r * 100)}%`;
+
+  const controls = (
+    <div className="flex items-center gap-2 print:hidden">
+      <select className="input" style={{ width: 'auto', padding: '0.25rem 0.5rem', fontSize: 14 }} aria-label={t('year_pick')} value={year} onChange={(e) => setYear(Number(e.target.value))}>
+        {years.map((y) => (
+          <option key={y} value={y}>
+            {y}
+          </option>
+        ))}
+      </select>
+      <button className="btn" onClick={() => window.print()} disabled={!d || d.empty}>
+        {t('year_print')}
+      </button>
+    </div>
+  );
+  if (q.isPending) return <Spinner />;
+  if (q.error) return <ErrorBox error={q.error} onRetry={() => q.refetch()} />;
+  if (!d || d.empty)
+    return (
+      <Card title={t('year_title', { y: year })} action={controls}>
+        <Empty>{t('year_empty')}</Empty>
+      </Card>
+    );
+
+  const tt = d.totals;
+  const chart = d.months.map((m) => ({ ...m, label: short(m.month) }));
+  const maxGroup = Math.max(1, ...d.groups.map((g) => g.total));
+  const maxMerchant = Math.max(1, ...d.merchants.map((m) => m.total));
+  const arrow = lang === 'he' ? '←' : '→';
+  const delta = (now: number, prev: number | null) => {
+    if (prev === null || prev === 0) return null;
+    const p = Math.round(((now - prev) / prev) * 100);
+    if (Math.abs(p) < 5) return null;
+    return <span className={`text-xs num ${p > 0 ? 'text-warn' : 'text-pos'}`}>{`${p > 0 ? '+' : '−'}${Math.abs(p)}%`}</span>;
+  };
+  const nw = d.netWorth;
+
+  return (
+    <div className="flex flex-col gap-3 year-report">
+      {/* --- the year in one line */}
+      <Card
+        title={
+          <span className="flex items-center gap-2">
+            {t('year_title', { y: d.year })}
+            {d.partial && <Chip>{t('year_so_far')}</Chip>}
+          </span>
+        }
+        action={controls}
+      >
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Stat label={t('year_income')} value={<Amount value={tt.income} tone="pos" decimals={0} />} />
+          <Stat label={t('year_spending')} value={<Amount value={tt.spending} tone="neutral" decimals={0} />} />
+          <Stat label={t('year_saved')} value={<Amount value={tt.saved} tone={tt.saved >= 0 ? 'pos' : 'neg'} sign="auto" decimals={0} />} />
+          <Stat label={t('year_rate')} value={<span className={`num ${tt.savingsRate !== null && tt.savingsRate < 0 ? 'text-neg' : ''}`}>{tt.savingsRate === null ? '–' : pct(tt.savingsRate)}</span>} />
+        </div>
+        <div className="mt-3 flex flex-col gap-0.5 text-xs text-muted">
+          <span>{t('year_months_n', { n: tt.months })}</span>
+          {tt.savings > 0 && <span>{t('year_to_savings', { x: m0(tt.savings) })}</span>}
+          {tt.paidBack > 0 && <span>{t('year_paid_back', { x: m0(tt.paidBack) })}</span>}
+          {d.previous && <span>{t('year_prev_line', { y: d.previous.year, i: m0(d.previous.income), o: m0(d.previous.spending), s: m0(d.previous.saved, 'auto') })}</span>}
+        </div>
+      </Card>
+
+      {/* --- month by month */}
+      <Card title={t('year_months')}>
+        <div className="h-48" dir="ltr">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={chart} margin={{ top: 8, right: 8, bottom: 0, left: 0 }} barGap={2}>
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#8b93a7' }} axisLine={false} tickLine={false} />
+              <YAxis hide />
+              <Tooltip
+                contentStyle={TOOLTIP_STYLE}
+                labelFormatter={(_, p) => (p?.[0]?.payload ? monthLabel((p[0].payload as { month: string }).month, locale) : '')}
+                formatter={(v, name) => [m0(Number(v)), t(name === 'income' ? 'trends_income' : 'trends_out')]}
+              />
+              <Bar dataKey="income" fill="#34d399" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+                {chart.map((m) => (
+                  <Cell key={m.month} fillOpacity={m.partial ? 0.45 : 0.9} />
+                ))}
+              </Bar>
+              <Bar dataKey="out" fill="#8b93a7" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+                {chart.map((m) => (
+                  <Cell key={m.month} fillOpacity={m.partial ? 0.45 : 0.9} />
+                ))}
+              </Bar>
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="flex gap-4 text-xs text-muted mt-1 flex-wrap">
+          <Legend color="#34d399" label={t('trends_income')} />
+          <Legend color="#8b93a7" label={t('trends_out')} />
+          {d.partial && <span>· {t('trends_partial')}</span>}
+        </div>
+        {(d.best || d.worst) && (
+          <div className="mt-2 flex flex-col">
+            {d.best && (
+              <Row>
+                <span className="flex-1 text-sm">{t('year_best')}</span>
+                <span className="text-sm text-muted">{monthLabel(d.best.month, locale)}</span>
+                <Amount value={d.best.net} sign="auto" decimals={0} className="text-sm w-24 text-end" />
+              </Row>
+            )}
+            {d.worst && (
+              <Row>
+                <span className="flex-1 text-sm">{t('year_worst')}</span>
+                <span className="text-sm text-muted">{monthLabel(d.worst.month, locale)}</span>
+                <Amount value={d.worst.net} tone={d.worst.net < 0 ? 'neg' : 'auto'} sign="auto" decimals={0} className="text-sm w-24 text-end" />
+              </Row>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {/* --- where it went */}
+      <Card title={t('year_where')} action={d.previous ? <span className="text-xs text-muted">{t('year_vs_prev', { y: d.previous.year })}</span> : undefined}>
+        <div className="flex flex-col divide-y divide-border">
+          {d.groups
+            .filter((g) => g.total > 0)
+            .map((g) => (
+              <div key={g.key} className="py-2 avoid-break">
+                <div className="flex items-center gap-3">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full shrink-0" style={{ background: colorOf(g.key) }} />
+                  <span className="flex-1 min-w-0 truncate text-sm">{groupName(g.key)}</span>
+                  <Meter value={g.total} max={maxGroup} color={colorOf(g.key)} className="w-20 sm:w-32" />
+                  <span className="w-14 text-end">{delta(g.total, g.previous)}</span>
+                  <Amount value={g.total} tone="neutral" decimals={0} className="text-sm w-24 text-end" />
+                </div>
+                <div className="ps-5 mt-0.5 flex flex-col">
+                  {g.categories.slice(0, 3).map((c) => (
+                    <div key={c.key} className="flex items-center gap-3 text-xs text-muted">
+                      <span className="flex-1 min-w-0 truncate">{lang === 'he' ? c.nameHe : c.nameEn}</span>
+                      <span className="w-14 text-end">{delta(c.total, c.previous)}</span>
+                      <Amount value={c.total} tone="muted" decimals={0} className="w-24 text-end" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+        </div>
+      </Card>
+
+      {/* --- top merchants */}
+      <Card title={t('year_merchants')}>
+        {d.merchants.length === 0 ? (
+          <Empty>{t('year_nothing')}</Empty>
+        ) : (
+          <div className="flex flex-col">
+            {d.merchants.map((m, i) => (
+              <Row key={`${m.merchantId ?? m.name}-${i}`}>
+                <span className="w-5 text-xs text-muted num">{i + 1}</span>
+                <span className="flex-1 min-w-0">
+                  <span className="block truncate text-sm">{m.name}</span>
+                  <span className="block text-xs text-muted">{t('year_charges', { n: m.count })}</span>
+                </span>
+                <Meter value={m.total} max={maxMerchant} className="w-20 sm:w-32" />
+                <Amount value={m.total} tone="neutral" decimals={0} className="text-sm w-24 text-end" />
+              </Row>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* --- fixed costs */}
+      <Card title={t('year_fixed')} action={d.fixed.streams.length ? <span className="text-xs text-muted">{t('year_fixed_total', { x: m0(d.fixed.total) })}</span> : undefined}>
+        {d.fixed.streams.length === 0 ? (
+          <Empty>{t('year_nothing')}</Empty>
+        ) : (
+          <div className="flex flex-col">
+            {d.fixed.streams.map((s) => (
+              <Row key={s.id}>
+                <span className="flex-1 min-w-0">
+                  <span className="flex items-center gap-1.5 text-sm">
+                    <span className="truncate">{s.name}</span>
+                    {s.isNew && <Chip tone="pos">{t('year_new')}</Chip>}
+                    {s.ended && <Chip>{t('year_ended')}</Chip>}
+                  </span>
+                  <span className="block text-xs text-muted">{t('year_charges', { n: s.count })}</span>
+                </span>
+                <Amount value={s.cost} tone="neutral" decimals={0} className="text-sm w-24 text-end" />
+              </Row>
+            ))}
+          </div>
+        )}
+        {d.fixed.priceChanges.length > 0 && (
+          <div className="mt-3">
+            <span className="text-xs text-muted uppercase tracking-wide">{t('year_price_changes')}</span>
+            {d.fixed.priceChanges.map((p) => (
+              <Row key={`${p.streamId}-${p.date}`}>
+                <span className="flex-1 min-w-0 truncate text-sm">{p.name}</span>
+                <span className="text-xs text-muted">{dayLabel(p.date, locale)}</span>
+                <span className={`text-sm flex items-center gap-1 ${p.to > p.from ? 'text-warn' : 'text-pos'}`}>
+                  <Amount value={p.from} tone="muted" />
+                  <span aria-hidden="true">{arrow}</span>
+                  <Amount value={p.to} tone="neutral" />
+                </span>
+              </Row>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* --- big moments */}
+      <Card title={t('year_big')}>
+        <div className="flex flex-col gap-3">
+          <MomentList title={t('year_purchases')} empty={t('year_nothing')}>
+            {d.big.purchases.map((p) => (
+              <Row key={p.txnId}>
+                <span className="flex-1 min-w-0 truncate text-sm">{p.name}</span>
+                <span className="text-xs text-muted">{dayLabel(p.date, locale)}</span>
+                <Amount value={p.amount} tone="neutral" decimals={0} className="text-sm w-24 text-end" />
+              </Row>
+            ))}
+          </MomentList>
+          <MomentList title={t('year_plans')} empty={t('year_nothing')}>
+            {d.big.plans.map((p) => (
+              <Row key={p.id}>
+                <span className="flex-1 min-w-0">
+                  <span className="block truncate text-sm">{p.name}</span>
+                  <span className="block text-xs text-muted">
+                    {dayLabel(p.firstDate, locale)} · {t('year_plan_n', { n: p.totalN })}
+                  </span>
+                </span>
+                <Amount value={p.total} tone="neutral" decimals={0} className="text-sm w-24 text-end" />
+              </Row>
+            ))}
+          </MomentList>
+          <MomentList title={t('year_events')} empty={t('year_nothing')}>
+            {d.big.events.map((e) => (
+              <Row key={e.id}>
+                <span className="flex-1 min-w-0">
+                  <span className="block truncate text-sm">{e.name}</span>
+                  {e.firstDate && <span className="block text-xs text-muted">{e.lastDate && e.lastDate !== e.firstDate ? `${dayLabel(e.firstDate, locale)} – ${dayLabel(e.lastDate, locale)}` : dayLabel(e.firstDate, locale)}</span>}
+                </span>
+                <Amount value={e.spent} tone="neutral" decimals={0} className="text-sm w-24 text-end" />
+              </Row>
+            ))}
+          </MomentList>
+        </div>
+      </Card>
+
+      {/* --- net worth */}
+      <Card title={t('year_networth')}>
+        {!nw.start && !nw.end ? (
+          <Empty>{t('year_nw_none')}</Empty>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
+            <Stat label={t('year_nw_start')} value={nw.start ? <Amount value={nw.start.total} tone="neutral" sign="auto" decimals={0} /> : <span className="text-muted">–</span>} />
+            <Stat label={d.partial ? t('year_nw_today') : t('year_nw_end')} value={nw.end ? <Amount value={nw.end.total} tone="neutral" sign="auto" decimals={0} /> : <span className="text-muted">–</span>} />
+            <Stat label={t('year_nw_change')} value={nw.start && nw.end ? <Amount value={nw.end.total - nw.start.total} tone={nw.end.total >= nw.start.total ? 'pos' : 'neg'} sign="always" decimals={0} /> : <span className="text-muted">–</span>} />
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-0.5 min-w-0">
+      <span className="text-xs text-muted truncate">{label}</span>
+      <span className="text-lg font-semibold">{value}</span>
+    </div>
+  );
+}
+
+function MomentList({ title, empty, children }: { title: string; empty: string; children: ReactNode[] }) {
+  return (
+    <div className="avoid-break">
+      <span className="text-xs text-muted uppercase tracking-wide">{title}</span>
+      {children.length ? <div className="flex flex-col">{children}</div> : <div className="text-sm text-muted py-1">{empty}</div>}
+    </div>
   );
 }
