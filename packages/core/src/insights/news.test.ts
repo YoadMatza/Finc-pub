@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkNewsSummary, newsFacts, newsSummaryPrompt, newsToneReading, parseCompanyNews, selectHeadlines } from './news.js';
+import { adviceIn, checkNewsSummary, newsFacts, newsSummaryPrompt, newsToneReading, parseCompanyNews, selectHeadlines } from './news.js';
 import { unavailableInsights } from './panel.js';
 import { signalsBoard } from './signals.js';
 
@@ -58,6 +58,19 @@ describe('the AI summary is checked by code before it is shown', () => {
       expect([...r.tones.entries()]).toEqual([['h1', 'positive']]);
       expect(r.sentences).toHaveLength(4);
     }
+  });
+
+  it('news words are not advice: sell-off, selling pressure, a holding company pass (found live 2026-11-16)', () => {
+    const news = [
+      { text: 'A sell-off hit the shares as selling pressure grew.', cites: ['h1'] },
+      { text: 'The holding company reported a buyback.', cites: ['h2'] },
+      { text: 'Analysts kept a cautious tone after the delay.', cites: ['h3'] },
+      { text: 'The price is 11.2% above its 200-day average.', cites: ['f:trend'] },
+    ];
+    expect(checkNewsSummary(answer(news), sent, ids).ok).toBe(true);
+    expect(adviceIn('Investors should consider trimming.')).toBe('should_act');
+    expect(adviceIn('The stock looks like a buy.')).toBe('is_a_buy');
+    expect(adviceIn('Analysts raised their price target.')).toBe('target');
   });
 
   it('refuses advice, links, invented numbers, unknown citations, a bad shape', () => {

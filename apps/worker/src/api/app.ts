@@ -1322,7 +1322,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const checked = checkNewsSummary(text, prompt, { headlines: headlines.map((h) => h.id), facts: facts.map((f) => f.id) });
     if (!checked.ok) {
       // the check's name only, never the model's text (it may echo a crafted headline)
-      log.info({ check: checked.check }, 'news summary: answer refused by the checks');
+      log.info({ check: checked.check, ...(checked.pattern ? { pattern: checked.pattern } : {}) }, 'news summary: answer refused by the checks');
       return c.json({ ...out, summaryUnavailableCode: 'rejected' });
     }
     const tones = Object.fromEntries(checked.tones);

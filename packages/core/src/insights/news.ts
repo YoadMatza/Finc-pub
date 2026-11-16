@@ -147,10 +147,26 @@ export function newsSummaryPrompt(symbol: string, name: string, headlines: reado
   return { system, user: lines.join('\n') };
 }
 
-/** Advice words in English and Hebrew: an answer with any of them is refused whole. */
-const ADVICE = /\b(buy|buying|sell|selling|hold|holding on|should|recommend\w*|target price|price target|undervalued|overvalued|outperform rating|accumulate)\b|לקנות|קנו|למכור|מכרו|להחזיק|כדאי|מומלץ|ממליץ|ממליצים|מחיר יעד/i;
+/**
+ * Advice in English and Hebrew: an answer with any of these is refused whole. Advice phrasing, not market words: news
+ * says "sell-off", "selling pressure" and "holding company" without advising anyone (found live 2026-11-16, when a
+ * list of bare words refused every summary). Each pattern has a name, so a refusal can be logged without its text.
+ */
+const ADVICE: ReadonlyArray<[string, RegExp]> = [
+  ['should_act', /\b(you|investors|shareholders|holders|readers|one)\s+(should|must|ought to|may want to|might want to)\b/i],
+  ['should_trade', /\bshould\s+(buy|sell|hold|invest|consider|avoid|add|trim|exit|accumulate)\b/i],
+  ['we_recommend', /\b(we|i)\s+(recommend|suggest|advise|would)\b/i],
+  ['recommend_trade', /\brecommend(s|ed|ing)?\s+(buying|selling|holding|investing|accumulating)\b/i],
+  ['trade_the_stock', /\b(buy|sell|hold|accumulate|add to)\s+(the|this|these|its)\s+(stock|shares|position)\b/i],
+  ['is_a_buy', /\b(is|looks like|remains|as)\s+an?\s+(buy|sell|hold|strong buy)\b/i],
+  ['target', /\b(price target|target price|fair value)\b/i],
+  ['valuation_call', /\b(undervalued|overvalued)\b/i],
+  ['he_advice', /לקנות|למכור|להחזיק|כדאי|מומלץ|ממליץ|ממליצים|מחיר יעד/],
+];
+/** The name of the first advice pattern in a sentence, or null. */
+export const adviceIn = (t: string): string | null => ADVICE.find(([, re]) => re.test(t))?.[0] ?? null;
 
-export type SummaryCheck = { ok: true; tones: Map<string, NewsTone>; sentences: Array<{ text: string; cites: string[] }> } | { ok: false; check: string };
+export type SummaryCheck = { ok: true; tones: Map<string, NewsTone>; sentences: Array<{ text: string; cites: string[] }> } | { ok: false; check: string; pattern?: string };
 
 /**
  * The model's answer, checked by code before it is shown (Part C): one JSON object; tones only for known headline ids;
@@ -184,7 +200,8 @@ export function checkNewsSummary(text: string, sent: { user: string }, ids: { he
     const t = x.text.replace(/\s+/g, ' ').trim();
     if (!t || t.length > SENTENCE_MAX) return { ok: false, check: 'sentence_length' };
     if (/https?:|www\.|<|>|\]\(/i.test(t)) return { ok: false, check: 'link' };
-    if (ADVICE.test(t)) return { ok: false, check: 'advice' };
+    const advice = adviceIn(t);
+    if (advice) return { ok: false, check: 'advice', pattern: advice };
     const cites = x.cites.filter((c): c is string => typeof c === 'string');
     if (!cites.length || cites.some((c) => !known.has(c))) return { ok: false, check: 'cites' };
     for (const n of t.replace(/,/g, '').match(/\d+(?:\.\d+)?/g) ?? []) if (!sentDigits.includes(n)) return { ok: false, check: 'number' };
