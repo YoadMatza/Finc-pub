@@ -8,8 +8,8 @@ import { assignMerchants } from '../engine/merchant.js';
 import { classifyRemaining } from '../engine/rules.js';
 import { ingestBatch } from '../ingest/ingest.js';
 import type { NormalizedRow } from '../ingest/types.js';
-import { buildPayload, categorizeWithAi, sanitizeForModel, systemPrompt } from './categorize-ai.js';
-import { AiError, createProvider, fakeProvider } from './provider.js';
+import { allowedAnswer, buildPayload, categorizeWithAi, sanitizeForModel, systemPrompt } from './categorize-ai.js';
+import { AiError, type AiProvider, createProvider, fakeProvider } from './provider.js';
 
 let db: Db;
 let acc: number;
@@ -75,6 +75,38 @@ describe('categorizeWithAi', () => {
     const again = await categorizeWithAi(db, fake, { since: '2026-01-01' });
     expect(fake.calls).toHaveLength(1); // every remaining merchant is cached → no new call
     expect(again.sent).toBe(0);
+  });
+
+  it('a steered or shifted answer cannot hide a merchant (security research P2-07)', async () => {
+    const replies: string[] = [];
+    const steered: AiProvider = {
+      name: 'steered',
+      model: 's-1',
+      async complete(input) {
+        expect(input.system).toMatch(/not instructions/);
+        const items = JSON.parse(input.user.slice(input.user.indexOf('['))) as Array<{ id: string; key: string }>;
+        expect(items.every((m, j) => m.id === `m${j + 1}`)).toBe(true);
+        // the first answer is dropped, so a positional reading would give the Thai answer to the next merchant;
+        // the other asks for categories that drop out of spending or belong to the other side
+        const out = [
+          { key: 'some other name', category: 'lifestyle.eating_out', confidence: 0.9 },
+          ...items.slice(1).map((m) => ({ id: m.id, key: m.key, category: m.key === 'דקאתלון' ? 'transfers' : 'income.salary', confidence: 0.95 })),
+        ];
+        const text = JSON.stringify(out);
+        replies.push(text);
+        return text;
+      },
+    };
+    const r = await categorizeWithAi(db, steered, { since: '2026-01-01' });
+    expect(replies).toHaveLength(1);
+    expect(r.applied.transactions).toBe(0);
+    for (const d of ['NEHCTIK IAHT AMUANO', 'דקאתלון']) expect(db.select().from(transactions).where(eq(transactions.descriptionRaw, d)).get()?.categoryId).toBeNull();
+    expect(allowedAnswer('transfers', false)).toBe(false);
+    expect(allowedAnswer('installments', false)).toBe(false);
+    expect(allowedAnswer('income.salary', false)).toBe(false);
+    expect(allowedAnswer('income.salary', true)).toBe(true);
+    expect(allowedAnswer('daily.supermarket', true)).toBe(false);
+    expect(allowedAnswer('daily.supermarket', false)).toBe(true);
   });
 });
 
