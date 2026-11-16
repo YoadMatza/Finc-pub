@@ -2,10 +2,11 @@
  * The signals board (research_notes/proposals/stock-decision-aids.md, Part E): instead of a combined score, every
  * source gets the same simple, documented reading, and the board says where they agree. Deterministic rules on data the
  * panel already has; a reading without its data is "unavailable", never a guess. No number score, no buy / sell / hold:
- * the owner's own rules are counted, not judged. News tone (Part C) is not built yet and always reads "unavailable";
+ * the owner's own rules are counted, not judged. News tone comes from Part C's toned headlines once they are fetched;
  * Reddit (Part D) was dropped by the owner on 2026-11-16.
  */
 import type { HoldingInsights } from './panel.js';
+import { type NewsTone, newsToneReading } from './news.js';
 
 export type SignalKey = 'trend' | 'market' | 'company' | 'analysts' | 'news';
 export type SignalReading = 'up' | 'down' | 'mixed' | 'ahead' | 'behind' | 'in_line' | 'growing' | 'shrinking' | 'positive' | 'negative' | 'unavailable';
@@ -97,11 +98,20 @@ function analystsSignal(d: HoldingInsights): BoardSignal {
   return { key: 'analysts', reading: 'mixed', direction: 0, facts };
 }
 
-export function signalsBoard(d: HoldingInsights, rules: ReadonlyArray<{ state: string }> = []): SignalsBoard {
+/** News tone (Part C): from the toned headlines the news endpoint cached; none fetched yet → unavailable. */
+function newsSignal(news: ReadonlyArray<{ tone: NewsTone | null }> | null | undefined): BoardSignal {
+  if (!news) return { key: 'news', reading: 'unavailable', direction: null, facts: {}, why: 'no_data' };
+  const r = newsToneReading(news);
+  const facts = { tonedHeadlines: r.toned, positivePct: r.positivePct, negativePct: r.negativePct };
+  if (r.reading === 'unavailable') return { key: 'news', reading: 'unavailable', direction: null, facts, why: 'no_data' };
+  return { key: 'news', reading: r.reading, direction: r.reading === 'positive' ? 1 : r.reading === 'negative' ? -1 : 0, facts };
+}
+
+export function signalsBoard(d: HoldingInsights, rules: ReadonlyArray<{ state: string }> = [], news?: ReadonlyArray<{ tone: NewsTone | null }> | null): SignalsBoard {
   const signals: BoardSignal[] = d.unavailable
     ? (['trend', 'market', 'company', 'analysts'] as const).map((key) => ({ key, reading: 'unavailable' as const, direction: null, facts: {}, why: 'no_data' as const }))
     : [trendSignal(d), marketSignal(d), companySignal(d), analystsSignal(d)];
-  signals.push({ key: 'news', reading: 'unavailable', direction: null, facts: {}, why: 'not_built' });
+  signals.push(newsSignal(news));
   const favourable = signals.filter((s) => s.direction === 1).map((s) => s.key);
   const unfavourable = signals.filter((s) => s.direction === -1).map((s) => s.key);
   const directional = favourable.length + unfavourable.length;

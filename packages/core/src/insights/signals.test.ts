@@ -31,7 +31,7 @@ describe('signals board', () => {
     expect(readings(b)).toEqual({ trend: 'up', market: 'ahead', company: 'growing', analysts: 'positive', news: 'unavailable' });
     expect(b.agreement).toBe('agree');
     expect(b.rules).toEqual({ apply: 1, checked: 2, total: 3 });
-    expect(b.signals.find((s) => s.key === 'news')?.why).toBe('not_built');
+    expect(b.signals.find((s) => s.key === 'news')?.why).toBe('no_data');
   });
 
   it('names the sides when the readings disagree', () => {

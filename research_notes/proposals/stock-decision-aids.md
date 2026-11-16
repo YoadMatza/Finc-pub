@@ -96,6 +96,9 @@ ticker goes to Finnhub (fixed host, no redirects, timeouts, the same rules as Ya
 
 ## Part C — News and an AI summary (added 2026-11-11)
 
+**Built 2026-11-16** (core insights/news.ts, GET /api/holdings/:id/news, the panel's News section, Settings → AI switch). Not
+yet: Yahoo as a fallback, and opening news links in the Android app (its link check allows sec.gov only; next app build).
+
 ### Sources
 - **Finnhub `/company-news?symbol=&from=&to=`** (free tier, same key): headline, source, time, link, short summary,
   per company. Last 14 days, newest first, up to 10 after de-duplication (same link or near-identical headline).

@@ -33,7 +33,7 @@ export interface WorkerState {
   /** SEC EDGAR for the panel's company sections; absent when insights are off or FINC_SEC_CONTACT is empty */
   sec?: Pick<SecService, 'company'>;
   /** Finnhub for the panel's analysts and earnings sections; absent when insights are off (the key is in the vault) */
-  finnhub?: Pick<FinnhubService, 'lookup'>;
+  finnhub?: Pick<FinnhubService, 'lookup' | 'news'>;
   /** the insights panel's deadlines (insights-panel.ts); tests shorten them */
   panelDeadlines?: { secMs?: number; finnhubMs?: number };
   /** the owner's holding rules (daily and after-sync evaluation); absent in tests that do not need it */

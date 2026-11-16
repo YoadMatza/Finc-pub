@@ -82,6 +82,20 @@ export function Settings({ onSignOut, thisDevice }: { onSignOut: () => void; thi
             <p className="text-xs text-muted mt-1">{t('chat_model_note')}</p>
           </div>
         )}
+        {/* decision aids C: the AI summary of stock news has its own switch; headlines show either way. Absent = on. */}
+        <div className="mt-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={s.ai.newsSummary ?? true}
+              disabled={!s.trusted || patch.isPending}
+              onChange={(e) => patch.mutate({ ai: { newsSummary: e.target.checked } })}
+            />
+            {t('news_setting')}
+          </label>
+          <p className="text-xs text-muted mt-1">{t('news_setting_help')}</p>
+        </div>
         <p className="text-xs text-muted mt-2">finc vault set ai_{s.ai.provider ?? 'openai'} · finc ai dry-run · finc ai run</p>
       </Card>
       <Card title={t('conventions')}>

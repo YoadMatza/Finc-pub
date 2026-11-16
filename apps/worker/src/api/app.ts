@@ -99,6 +99,14 @@ import {
   billCalendar,
   setSplit,
   signalsBoard,
+  selectHeadlines,
+  newsFacts,
+  newsSummaryPrompt,
+  checkNewsSummary,
+  readMarketCache,
+  writeMarketCache,
+  type NewsHeadline,
+  type NewsTone,
   removeSplit,
   SplitError,
   SPLIT_MAX_PARTS,
@@ -151,7 +159,7 @@ import {
   type SecurityEventInput,
 } from '@finc/core';
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type { DeviceView } from '@finc/core';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { type Context, Hono } from 'hono';
@@ -177,6 +185,13 @@ import { defaultWebDist, serveStatic } from './static.js';
 
 const COOKIE = 'finc_session';
 /** P2-02 review: what one chat request from outside may carry */
+/** decision aids C: the summary's on/off setting, its cache (market_data_cache source), freshness and wait */
+export const NEWS_SUMMARY_SETTING = 'ai.newsSummary';
+export const NEWS_AI_SOURCE = 'ai-news';
+export const NEWS_SUMMARY_TTL_MS = 12 * 60 * 60 * 1000;
+export const NEWS_TONES_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const NEWS_SUMMARY_DEADLINE_MS = 45_000;
+const LATE_ANSWER = '\u0000late';
 export const CHAT_OUTSIDE_MESSAGES = 12;
 /** From outside the home network, earlier lookups carried into one question: at most this many characters (P2-02). */
 export const CHAT_OUTSIDE_LOOKUP_CHARS = 8_000;
@@ -1229,7 +1244,96 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     // the owner's rules for this symbol, evaluated now against this panel and the holdings (and stored)
     const rules = rulesForPanel(state.db, row.symbol, out, state.prices?.cache() ?? emptyPriceCache(), now());
     // decision aids E: one documented reading per source and where they agree (core insights/signals.ts)
-    return c.json({ ...out, rules, signals: signalsBoard(out, rules) });
+    return c.json({ ...out, rules, signals: signalsBoard(out, rules, cachedNewsTones(row.symbol)) });
+  });
+  // --- decision aids C (research_notes/proposals/stock-decision-aids.md): a held stock's news and an AI summary of it.
+  // Headlines from Finnhub (the same key and limits as analysts); the summary from the chat's provider, checked by code
+  // (core insights/news.ts) before it is shown, cached 12 hours per stock and set of headlines, counted under the chat
+  // limits for callers away from home (P2-02). What leaves the PC: the ticker to Finnhub; public headlines and the
+  // panel's public market facts to the AI provider. Never a quantity, cost, gain or account.
+  const newsTonesKey = (sym: string) => `tones:${sym.toUpperCase()}`;
+  const cachedNewsTones = (sym: string): Array<{ tone: NewsTone | null }> | null => {
+    try {
+      const hit = readMarketCache(state.db, NEWS_AI_SOURCE, newsTonesKey(sym));
+      const tones = (hit?.value as { tones?: unknown } | null)?.tones;
+      if (!hit || !Array.isArray(tones) || now() - hit.fetchedAt > NEWS_TONES_MAX_AGE_MS) return null;
+      return tones.map((t) => ({ tone: t === 'positive' || t === 'neutral' || t === 'negative' ? t : null }));
+    } catch {
+      return null;
+    }
+  };
+  api.get('/holdings/:id/news', async (c) => {
+    const refused = actorRefusal(c, insightsCounter, 'insights', 'insights.limited', 'insight requests', INSIGHTS_OUTSIDE_PER_HOUR);
+    if (refused) return refused;
+    const id = Number(c.req.param('id'));
+    if (!Number.isSafeInteger(id) || id <= 0) throw new HTTPException(404, { message: 'no such holding' });
+    const row = state.db.$client
+      .prepare(
+        `select h.id, h.kind, h.symbol, h.name, h.currency, h.price, h.taken_at takenAt from holding_snapshot h
+           where h.id = ? and h.taken_at = (select max(taken_at) from holding_snapshot x where x.account_id = h.account_id)`,
+      )
+      .get(id) as { id: number; kind: string; symbol: string; name: string; currency: string; price: number | null; takenAt: string } | undefined;
+    if (!row || row.kind !== 'security') throw new HTTPException(404, { message: 'no such holding in the latest snapshot' });
+    const t = now();
+    const base = { symbol: row.symbol, fetchedAt: new Date(t).toISOString(), stale: false, headlines: [] as NewsHeadline[], summary: null as null | { sentences: Array<{ text: string; cites: string[] }>; model: string; generatedAt: string } };
+    if (!state.finnhub) return c.json({ ...base, headlinesUnavailableCode: 'off', summaryUnavailableCode: 'off' });
+    const got = await state.finnhub.news(row.symbol);
+    if (!got.ok) return c.json({ ...base, headlinesUnavailableCode: got.code, summaryUnavailableCode: 'too_few' });
+    const headlines = selectHeadlines(got.rows, t);
+    const out = { ...base, fetchedAt: new Date(got.fetchedAt).toISOString(), stale: got.stale, headlines };
+    if (!headlines.length) return c.json({ ...out, headlinesUnavailableCode: 'none', summaryUnavailableCode: 'too_few' });
+    const withTones = (tones: Record<string, NewsTone>) => headlines.map((h) => ({ ...h, tone: tones[h.id] ?? null }));
+    const sym = row.symbol.toUpperCase();
+    // the summary (and the tones) for exactly this set of headlines, when cached
+    const set = createHash('sha256').update(headlines.map((h) => `${h.url}|${h.title}`).join('\n')).digest('hex').slice(0, 16);
+    const sumKey = `sum:${sym}:${set}`;
+    const cached = (() => {
+      try {
+        const hit = readMarketCache(state.db, NEWS_AI_SOURCE, sumKey);
+        return hit && now() - hit.fetchedAt < NEWS_SUMMARY_TTL_MS ? (hit.value as { tones: Record<string, NewsTone>; summary: NonNullable<typeof base.summary> }) : null;
+      } catch {
+        return null;
+      }
+    })();
+    if (cached) return c.json({ ...out, headlines: withTones(cached.tones), summary: cached.summary });
+    if (getSetting(state.db, NEWS_SUMMARY_SETTING) === 'off') return c.json({ ...out, summaryUnavailableCode: 'off' });
+    if (headlines.length < 2) return c.json({ ...out, summaryUnavailableCode: 'too_few' });
+    const ai = getAiSettings(state.db);
+    if (!ai.provider) return c.json({ ...out, summaryUnavailableCode: 'no_provider' });
+    const k = aiKey(ai.provider);
+    if (ai.provider !== 'local' && !k.key) return c.json({ ...out, summaryUnavailableCode: !state.vault || state.vault.locked ? 'vault_locked' : 'no_provider' });
+    const lim = getLimits(state.db);
+    if (actorRefusal(c, chatCounter, 'chat', 'chat.limited', 'questions', lim.chatPerHour, lim.chatPerDay)) return c.json({ ...out, summaryUnavailableCode: 'limited' });
+    // the panel's public facts (built from its caches; the same deadlines as the insights route)
+    const r: InsightsRow = { id: row.id, symbol: row.symbol, name: row.name, currency: row.currency, price: typeof row.price === 'number' && Number.isFinite(row.price) && row.price > 0 ? row.price : null, takenAt: row.takenAt };
+    const panel = await buildPanel({ insights: state.insights, sec: state.sec, finnhub: state.finnhub, deadlines: state.panelDeadlines }, r, now);
+    const facts = panel.unavailable ? [] : newsFacts(panel, t);
+    const prompt = newsSummaryPrompt(sym, row.name, headlines, facts);
+    const model = chatModelOf(ai) ?? AI_DEFAULTS[ai.provider].model;
+    const provider = (opts.chatProvider ?? createProvider)({ provider: ai.provider, model, ...(ai.baseUrl ? { baseUrl: ai.baseUrl } : {}), ...(k.key ? { apiKey: k.key } : {}) });
+    let text: string;
+    try {
+      text = await withinMs(provider.complete(prompt), NEWS_SUMMARY_DEADLINE_MS, LATE_ANSWER);
+    } catch (e) {
+      log.info({ err: e instanceof AiError ? e.message.slice(0, 80) : e instanceof Error ? e.name : 'error' }, 'news summary: provider failed');
+      return c.json({ ...out, summaryUnavailableCode: 'unreachable' });
+    }
+    if (text === LATE_ANSWER) return c.json({ ...out, summaryUnavailableCode: 'busy' });
+    const checked = checkNewsSummary(text, prompt, { headlines: headlines.map((h) => h.id), facts: facts.map((f) => f.id) });
+    if (!checked.ok) {
+      // the check's name only, never the model's text (it may echo a crafted headline)
+      log.info({ check: checked.check }, 'news summary: answer refused by the checks');
+      return c.json({ ...out, summaryUnavailableCode: 'rejected' });
+    }
+    const tones = Object.fromEntries(checked.tones);
+    const summary = { sentences: checked.sentences, model, generatedAt: new Date(now()).toISOString() };
+    try {
+      writeMarketCache(state.db, NEWS_AI_SOURCE, sumKey, now(), { tones, summary });
+      writeMarketCache(state.db, NEWS_AI_SOURCE, newsTonesKey(sym), now(), { tones: headlines.map((h) => tones[h.id] ?? null) });
+    } catch {
+      /* shown now; summarised again next time */
+    }
+    return c.json({ ...out, headlines: withTones(tones), summary });
   });
   // --- the owner's own rules for holdings (research_notes/proposals/stock-decision-aids.md, Part A): fixed templates
   // with validated numbers, no free text. Any signed-in caller; edits from outside 30 an hour per actor; each edit is
@@ -1501,6 +1605,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         model: ai.model ?? (ai.provider ? AI_DEFAULTS[ai.provider].model : null),
         baseUrl: ai.baseUrl ?? (ai.provider ? AI_DEFAULTS[ai.provider].baseUrl : null),
         chatModel: ai.chatModel,
+        // decision aids C: the AI summary of a stock's news (headlines show either way); on unless turned off
+        newsSummary: getSetting(state.db, NEWS_SUMMARY_SETTING) !== 'off',
         chatModels: ai.provider === 'openai' || ai.provider === 'anthropic' ? CHAT_MODELS[ai.provider] : null,
       },
       schedule: state.scheduler.config,
@@ -1657,6 +1763,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
             baseUrl: z.string().max(200).nullable().optional(),
             // chat v2 step 4: one of CHAT_MODELS for the provider, null = the chat uses `model`
             chatModel: z.string().max(80).nullable().optional(),
+            // decision aids C: the AI summary of stock news on / off
+            newsSummary: z.boolean().optional(),
           })
           .optional(),
         // P1-09: days a paired device may go unused before its token is revoked; 0 = never
@@ -1771,6 +1879,10 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
           setSetting(state.db, 'ai.baseUrl', body.ai.baseUrl);
           changed.push('ai.baseUrl');
           urls.aiBaseUrl = body.ai.baseUrl;
+        }
+        if (body.ai.newsSummary !== undefined) {
+          setSetting(state.db, NEWS_SUMMARY_SETTING, body.ai.newsSummary ? null : 'off');
+          changed.push('ai.newsSummary');
         }
       }
     } finally {

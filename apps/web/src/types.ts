@@ -666,6 +666,8 @@ export interface Settings {
     chatModel?: string | null;
     /** the chat-model tiers offered for this provider; null for local / none */
     chatModels?: { fast: string; better: string } | null;
+    /** the AI summary of stock news (decision aids C); headlines show either way. Absent from older workers: on. */
+    newsSummary?: boolean;
   };
   schedule: { times: string[]; jitterMinutes: number; timezone: string; monthsBack: number };
   vault: 'unlocked' | 'locked' | 'missing';
@@ -1105,4 +1107,36 @@ export interface HoldingRuleSource {
   time: string | null;
   /** the SEC form, e.g. "10-Q" */
   form: string | null;
+}
+
+/** One headline of GET /api/holdings/:id/news. Every text field is untrusted third-party text: plain text only. */
+export interface NewsHeadline {
+  /** 'h1', 'h2', ... in display order (newest first) */
+  id: string;
+  title: string;
+  source: string;
+  /** https only */
+  url: string;
+  publishedAt: string;
+  /** Finnhub's one-line summary */
+  summary: string | null;
+  /** null = not toned */
+  tone: 'positive' | 'neutral' | 'negative' | null;
+}
+
+/** GET /api/holdings/:id/news (decision aids C): recent headlines and an AI summary that cites them. Never advice. */
+export interface HoldingNews {
+  symbol: string;
+  fetchedAt: string;
+  /** served from cache past its freshness */
+  stale: boolean;
+  headlines: NewsHeadline[];
+  headlinesUnavailableCode?: 'off' | 'no_key' | 'vault_locked' | 'not_covered' | 'busy' | 'unreachable' | 'invalid' | 'none';
+  summary: {
+    /** cites are headline ids ('h3') or fact ids ('f:trend', 'f:market', 'f:company', 'f:analysts', 'f:filing:<n>') */
+    sentences: Array<{ text: string; cites: string[] }>;
+    model: string;
+    generatedAt: string;
+  } | null;
+  summaryUnavailableCode?: 'off' | 'no_provider' | 'vault_locked' | 'too_few' | 'busy' | 'unreachable' | 'rejected' | 'limited';
 }

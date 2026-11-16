@@ -7,3 +7,4 @@ export * from './finnhub.js';
 export * from './analysts.js';
 export * from './market-cache.js';
 export * from './signals.js';
+export * from './news.js';

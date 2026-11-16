@@ -15,11 +15,11 @@ security alerts work while the vault is locked).
 |---|---|---|---|---|
 | Your banks and card companies | **Yes**, at least one | your normal online-banking login | vault: `beinleumi`, `isracard`, `max` | free |
 | RiseUp API | No (history import only) | RiseUp personal access token | vault: `riseup` | your RiseUp subscription |
-| OpenAI **or** Anthropic **or** a local model | No (chat, AI categorisation) | API key, or none for a local model | vault: `ai_openai` / `ai_anthropic` | pay per use, cents a day |
+| OpenAI **or** Anthropic **or** a local model | No (chat, AI categorisation, stock news summary) | API key, or none for a local model | vault: `ai_openai` / `ai_anthropic` | pay per use, cents a day |
 | Telegram Bot API | No, but recommended (alerts, one-time codes) | two bots from @BotFather | vault: `telegram`; `data/alarm-bot.json` | free |
 | Yahoo Finance (public chart endpoint) | No (live prices, stock facts) | none | — | free |
 | SEC EDGAR | No (company figures for US stocks) | none, a contact e-mail | `.env`: `FINC_SEC_CONTACT` | free |
-| Finnhub | No (analysts' ratings, earnings dates) | free API key | vault: `finnhub` | free tier |
+| Finnhub | No (analysts' ratings, earnings dates, company news) | free API key | vault: `finnhub` | free tier |
 | DuckDNS | Only for access from outside home | DuckDNS account + token | `secrets/caddy.env` | free |
 | Let's Encrypt | Only for access from outside home | none (automatic) | — | free |
 | A NAS over SFTP (your own) | No (off-machine backup copies) | an upload-only SSH user | vault: `nas_backup` | your hardware |
@@ -53,13 +53,13 @@ Without any of the optional services finc still syncs your banks, computes every
 
 | | |
 |---|---|
-| **For** | "Ask my money" (the chat) and categorising merchants the rules could not place (`finc ai run`). |
+| **For** | "Ask my money" (the chat), categorising merchants the rules could not place (`finc ai run`), and the summary of a held stock's news in its panel. |
 | **Hosts** | OpenAI: `api.openai.com`. Anthropic: `api.anthropic.com`. Local: any OpenAI-compatible server you run, e.g. Ollama at `http://localhost:11434/v1` (from inside Docker: `http://host.docker.internal:11434/v1`). |
 | **Setup** | `finc ai config --provider openai` and `finc vault set ai_openai` (key starts with `sk-`); or `--provider anthropic` and `finc vault set ai_anthropic` (`sk-ant-`); or `finc ai config --provider local --base-url <url> --model <name>` (no key). Then Settings → AI → Chat model: Fast or Better. |
 | **Default models** | Categorisation: `gpt-5-mini` / `claude-haiku-5-5` / `llama3.1`. Chat: Fast = `gpt-5-mini` / `claude-haiku-5-5`, Better = `gpt-5` / `claude-sonnet-5-5`. |
-| **Sent** | Merchant names, amounts and dates (months for categorisation), and your question. **Never** account or card numbers, raw bank descriptions, balances by account, or error text. The model only picks one of a few fixed local lookups; finc computes the answer on your machine. |
+| **Sent** | Merchant names, amounts and dates (months for categorisation), and your question. **Never** account or card numbers, raw bank descriptions, balances by account, or error text. The model only picks one of a few fixed local lookups; finc computes the answer on your machine. For the news summary: public headlines (title, source, date, Finnhub's one-line summary), SEC filing titles and the panel's public market figures (price trend, return against the S&P 500, the company's reported figures, analysts' counts); never a quantity, cost, gain or account. Its answer is checked by code (citations, numbers, no links, no advice words) before it is shown. |
 | **Cost** | Pay per use with your own key. Normal use is a few cents a day; `finc chat-eval` costs a few cents per run. Away from home, phones and passkeys are limited to 30 questions an hour and 100 a day. |
-| **Turn off** | `finc ai config --clear`. |
+| **Turn off** | `finc ai config --clear`. The news summary alone: Settings → AI → AI summary of stock news. |
 
 ## Telegram (optional, recommended)
 
@@ -94,10 +94,10 @@ Without any of the optional services finc still syncs your banks, computes every
 
 | | |
 |---|---|
-| **For** | Analysts' buy / hold / sell counts and earnings dates in the stock panel, and rules that watch them. |
+| **For** | Analysts' buy / hold / sell counts, earnings dates and the last 14 days of company news in the stock panel, and rules that watch them. |
 | **Host** | `finnhub.io` |
 | **Setup** | A free key from finnhub.io → Dashboard, then `finc vault set finnhub`. |
-| **Sent** | Ticker symbols, and the key in a request header. |
+| **Sent** | Ticker symbols (and a date window), and the key in a request header. News is fetched at most once per stock every 12 hours, only when its panel is opened. |
 | **Turn off** | `finc vault rm finnhub`. |
 
 ## DuckDNS and Let's Encrypt (only for access from outside home)

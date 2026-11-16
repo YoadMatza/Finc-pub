@@ -42,6 +42,10 @@ import {
   finnhubGet,
   finnhubSymbol,
   israelDate,
+  NEWS_DAYS,
+  type NewsRow,
+  newsPath,
+  parseCompanyNews,
   parseEarnings,
   parseProfile,
   parseRecommendations,
@@ -67,6 +71,11 @@ export const FINNHUB_MIN_GAP_MS = 1100;
 export const EARNINGS_BACK_DAYS = 120;
 export const EARNINGS_AHEAD_FETCH_DAYS = 120;
 const MAX_MEMORY = 128;
+/** company news (Part C): fresh for 12 hours, then served stale (with its date) up to FINNHUB_MAX_STALE_MS */
+export const FINNHUB_NEWS_TTL_MS = 12 * 60 * 60 * 1000;
+
+export type FinnhubNews = { ok: true; rows: NewsRow[]; fetchedAt: number; stale: boolean } | { ok: false; code: AnalystsUnavailableCode };
+
 export const FINNHUB_PROFILE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const FINNHUB_PROFILE_EMPTY_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -119,6 +128,7 @@ export class FinnhubService {
   private readonly failed = new Map<string, { at: number; code: AnalystsUnavailableCode }>();
   private readonly inflight = new Map<string, Promise<Got<Kind>>>();
   private readonly profiles = new Map<string, Profile>();
+  private readonly newsMemory = new Map<string, { rows: NewsRow[]; fetchedAt: number }>();
   private readonly profileInflight = new Map<string, Promise<{ ok: true; ticker: string | null } | { ok: false; code: AnalystsUnavailableCode }>>();
   private badKey: { hash: string; at: number } | null = null;
   private failures = 0;
@@ -371,6 +381,80 @@ export class FinnhubService {
       this.log.debug({ status: 403 }, 'finnhub: symbol not on the plan');
     } else this.log.info({ reason: r.reason, ...(r.status ? { status: r.status } : {}) }, 'finnhub: request failed');
     return r;
+  }
+
+  /**
+   * A held stock's company news of the last NEWS_DAYS days (Part C), within `deadlineMs`: fresh for 12 hours in memory
+   * and market_data_cache (`news:SYM`), else one request; a stale entry is served (stale: true) when it cannot be
+   * refreshed. What leaves the machine: the ticker and the date window, as for the other kinds. Never throws.
+   */
+  async news(symbol: string, deadlineMs?: number): Promise<FinnhubNews> {
+    const sym = finnhubSymbol(symbol);
+    if (!sym) return { ok: false, code: 'not_covered' };
+    const k = `news:${sym}`;
+    const t = this.now();
+    const fromCache = (): { rows: NewsRow[]; fetchedAt: number } | null => {
+      const m = this.newsMemory.get(k);
+      if (m) return m;
+      try {
+        const stored = readMarketCache(this.deps.db, FINNHUB_SOURCE, k);
+        const rows = stored ? parseCompanyNews((stored.value as { items?: unknown } | null)?.items) : null;
+        if (!stored || !rows) return null;
+        const e = { rows, fetchedAt: stored.fetchedAt };
+        this.newsMemory.set(k, e);
+        return e;
+      } catch {
+        return null;
+      }
+    };
+    const hit = fromCache();
+    const serve = (code: AnalystsUnavailableCode): FinnhubNews => (hit && t - hit.fetchedAt >= 0 && t - hit.fetchedAt < FINNHUB_MAX_STALE_MS ? { ok: true, rows: hit.rows, fetchedAt: hit.fetchedAt, stale: true } : { ok: false, code });
+    if (hit && t >= hit.fetchedAt && t - hit.fetchedAt < FINNHUB_NEWS_TTL_MS) return { ok: true, rows: hit.rows, fetchedAt: hit.fetchedAt, stale: false };
+    const key = this.deps.key();
+    if (!key.ok) return serve(key.code);
+    if (this.badKey && this.badKey.hash === hashKey(key.key) && t - this.badKey.at < FINNHUB_BAD_KEY_TTL_MS) return serve('no_key');
+    const f = this.failed.get(k);
+    if (f && t >= f.at && t - f.at < FINNHUB_FAIL_TTL_MS) return serve(f.code);
+    if (t < this.backoffUntil) return serve('busy');
+    const today = israelDate(t);
+    const from = new Date(Date.parse(`${today}T00:00:00Z`) - NEWS_DAYS * 86_400_000).toISOString().slice(0, 10);
+    const fetching = (async (): Promise<FinnhubNews> => {
+      const r = await this.request(newsPath(sym, from, today), key.key);
+      if (!r.ok) {
+        const code = CODE[r.reason];
+        if (r.reason !== 'rate_limited' && r.reason !== 'no_key') this.failed.set(k, { at: this.now(), code });
+        return serve(code);
+      }
+      const rows = parseCompanyNews(r.body, (check) => this.log.info({ kind: 'news', reason: 'bad_answer', check }, 'finnhub: answer failed validation'));
+      if (!rows) {
+        this.failed.set(k, { at: this.now(), code: 'invalid' });
+        return serve('invalid');
+      }
+      const e = { rows, fetchedAt: this.now() };
+      this.failed.delete(k);
+      this.newsMemory.set(k, e);
+      if (this.newsMemory.size > MAX_MEMORY) this.newsMemory.delete(this.newsMemory.keys().next().value!);
+      try {
+        writeMarketCache(this.deps.db, FINNHUB_SOURCE, k, e.fetchedAt, { items: rows.map((x) => ({ headline: x.title, source: x.source, url: x.url, datetime: Math.round(x.at / 1000), summary: x.summary ?? '' })) });
+      } catch (err) {
+        this.log.warn({ kind: 'news', err: err instanceof Error ? err.name : 'error' }, 'finnhub: cache not stored');
+      }
+      this.log.debug({ kind: 'news', rows: rows.length }, 'finnhub: fetched');
+      return { ok: true, rows, fetchedAt: e.fetchedAt, stale: false };
+    })();
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<typeof LATE>((res) => {
+      timer = setTimeout(() => res(LATE), Math.max(0, deadlineMs ?? this.deps.deadlineMs ?? FINNHUB_DEADLINE_MS));
+      timer.unref?.();
+    });
+    try {
+      const r = await Promise.race([fetching, late]);
+      return r === LATE ? serve('busy') : r;
+    } catch {
+      return serve('unreachable');
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Counts only, for tests and health-like checks. */

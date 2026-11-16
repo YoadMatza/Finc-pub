@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
-import { Fragment, useMemo, useState, type PointerEvent, type ReactNode } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
 import { dayLabel, foreignMoney } from '../format';
@@ -8,8 +8,9 @@ import { isNative, openExternalNative } from '../native';
 import { INSIGHTS_STALE_MS, RETURN_KEYS, absPct, axisNum, betaReading, buildChart, crossCheckNote, diffTone, drawdownView, insightsReady, lastYear, nearestIndex, ptsText, trendReadings, unavailableReason, type ChartBox } from '../insights';
 import { gainTone, pctText, stamp, toneClass } from '../live';
 import { groupResults, jerusalemDay, lastKnownText, noneApplyText, nowText, restSummary, ruleSentence, sinceDay, sourceText } from '../holdingRules';
+import { citeMarks, factKey, headlineAnchor, headlineNumber, headlinesUnavailableKey, newsLink, summaryUnavailableKey, toneDot, type CiteMark } from '../insightsNews';
 import { RATING_LABEL, analystsParts, changeText, monthYear, ratingColor, sharePct } from '../insightsAnalysts';
-import type { BoardSignal, HoldingInsights, HoldingRuleResult, SignalsBoard, HoldingView, InsightCompanyNote, InsightFigure, InsightFiling, InsightPoint, LiveHoldingRow } from '../types';
+import type { BoardSignal, HoldingInsights, HoldingNews, NewsHeadline, HoldingRuleResult, SignalsBoard, HoldingView, InsightCompanyNote, InsightFigure, InsightFiling, InsightPoint, LiveHoldingRow } from '../types';
 import { FILINGS_VISIBLE, TREND_ARROW, basisCaption, companyUnavailableReason, compactNumber, figureCurrency, filingText, isolateLtr, latestSecDate, marginTrend, noteText, openSecLink, periodLabel, placeNotes, ratioText, secLink, type MarginTrend } from '../insightsCompany';
 import { Amount, Bar, ErrorBox } from './ui';
 
@@ -62,6 +63,7 @@ export function InsightsView({ p, r, share, onBack }: { p: HoldingView; r: LiveH
           <RiskSection d={ready} />
           <CompanySection d={ready} />
           <AnalystsSection d={ready} />
+          {id !== undefined && <NewsSection id={id} />}
           <FilingsSection d={ready} />
           <EventsSection d={ready} />
         </>
@@ -80,6 +82,7 @@ export function InsightsView({ p, r, share, onBack }: { p: HoldingView; r: LiveH
             <>
               <CompanySection d={d} />
               <AnalystsSection d={d} />
+              {id !== undefined && <NewsSection id={id} />}
               <FilingsSection d={d} />
             </>
           )}
@@ -759,6 +762,165 @@ function AnalystsSection({ d }: { d: HoldingInsights }) {
         </span>
       )}
     </Section>
+  );
+}
+
+/**
+ * Decision aids C. Recent headlines (Finnhub, newest first) with a tone dot and a link that opens outside finc, and
+ * above them the AI summary, each sentence followed by what it cites: a headline number that jumps to that headline,
+ * or a short label for one of the panel's figures. Headline fields are untrusted text: plain text only, never HTML.
+ * Its own query, so a slow or failing news call never holds up the rest of the panel; once it has run, the hub's
+ * cache has the news tone, so the signals board above is refreshed.
+ */
+function NewsSection({ id }: { id: number }) {
+  const { t } = useI18n();
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ['news', id],
+    queryFn: () => api.get<HoldingNews>(`/api/holdings/${id}/news`),
+    staleTime: INSIGHTS_STALE_MS,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchInterval: false,
+    retry: 1,
+  });
+  const updated = q.isSuccess ? q.dataUpdatedAt : 0;
+  useEffect(() => {
+    // only news newer than the insights on screen changes the board: reopening the panel from cache refetches nothing
+    if (!updated) return;
+    const insightsAt = qc.getQueryState(['insights', id])?.dataUpdatedAt ?? 0;
+    if (updated > insightsAt) void qc.invalidateQueries({ queryKey: ['insights', id] });
+  }, [updated, id, qc]);
+  const [lit, setLit] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const n = q.data;
+  const ids = useMemo(() => new Set((n?.headlines ?? []).map((h) => h.id)), [n]);
+  const jump = (hid: string) => {
+    if (!n) return;
+    document.getElementById(headlineAnchor(n.symbol, hid))?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setLit(hid);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setLit(null), 2500);
+  };
+  return (
+    <Section title={t('news_title')} help={t('news_help')}>
+      {q.isPending ? (
+        <div className="flex flex-col gap-2" aria-busy="true">
+          <div className="rounded bg-surface-2 animate-pulse h-3 w-3/4" />
+          <div className="rounded bg-surface-2 animate-pulse h-3 w-2/3" />
+          <div className="rounded bg-surface-2 animate-pulse h-12 w-full" />
+        </div>
+      ) : q.isError ? (
+        <ErrorBox error={q.error} onRetry={() => void q.refetch()} />
+      ) : (
+        n && (
+          <>
+            {n.summary && n.summary.sentences.length > 0 ? (
+              <div className="card p-3 flex flex-col gap-1.5">
+                <span className="text-xs font-semibold text-muted">{t('news_ai_label')}</span>
+                <p className="leading-relaxed" dir="auto">
+                  {n.summary.sentences.map((x, i) => (
+                    <Fragment key={i}>
+                      {i > 0 && ' '}
+                      <span dir="auto">{x.text}</span>
+                      {citeMarks(x.cites, ids).map((m) => (
+                        <Cite key={m.kind === 'headline' ? m.id : `${m.key}-${m.n ?? ''}`} m={m} onJump={jump} />
+                      ))}
+                    </Fragment>
+                  ))}
+                </p>
+                <span className="text-[10px] text-muted/80">{t('news_ai_model', { m: isolateLtr(n.summary.model), t: stamp(n.summary.generatedAt) })}</span>
+              </div>
+            ) : (
+              <p className="text-xs text-muted">{t(summaryUnavailableKey(n.summaryUnavailableCode))}</p>
+            )}
+            {n.headlines.length > 0 ? (
+              <ul className="card px-3 py-1 divide-y divide-border text-xs">
+                {n.headlines.map((h) => (
+                  <HeadlineRow key={h.id} h={h} anchor={headlineAnchor(n.symbol, h.id)} lit={lit === h.id} />
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted">{t(headlinesUnavailableKey(n.headlinesUnavailableCode))}</p>
+            )}
+            <span className="text-[10px] text-muted/80">{t(n.stale ? 'news_stale' : 'news_fetched', { t: stamp(n.fetchedAt) })}</span>
+          </>
+        )
+      )}
+      <p className="text-xs text-muted">{t('sig_footer')}</p>
+    </Section>
+  );
+}
+
+/** A citation mark: a headline number (jumps to it) or a figure's short label. */
+function Cite({ m, onJump }: { m: CiteMark; onJump: (id: string) => void }) {
+  const { t } = useI18n();
+  if (m.kind === 'headline')
+    return (
+      <button type="button" className="ms-0.5 align-super text-[10px] text-accent num hover:underline" aria-label={t('news_cite_headline', { n: m.n })} onClick={() => onJump(m.id)}>
+        <span dir="ltr">[{m.n}]</span>
+      </button>
+    );
+  return (
+    <span className="ms-1 align-super rounded bg-surface-2 px-1 text-[10px] text-muted whitespace-nowrap">
+      {t(factKey(m.key))}
+      {m.n !== null ? ` ${m.n}` : ''}
+    </span>
+  );
+}
+
+/** One headline: tone dot, number, title (plain text), source and date, and the link that opens outside finc. */
+function HeadlineRow({ h, anchor, lit }: { h: NewsHeadline; anchor: string; lit: boolean }) {
+  const { t, locale } = useI18n();
+  const href = newsLink(h.url);
+  const dot = toneDot(h.tone);
+  const day = jerusalemDay(h.publishedAt);
+  const num = headlineNumber(h.id);
+  const body = (
+    <>
+      <span className={`mt-1 inline-block w-2 h-2 rounded-full border shrink-0 ${dot.className}`} role="img" aria-label={t(dot.label)} title={t(dot.label)} />
+      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
+        <span className="leading-snug font-medium" dir="auto">
+          {num !== null && (
+            <span className="text-muted num me-1" dir="ltr">
+              [{num}]
+            </span>
+          )}
+          {h.title}
+        </span>
+        {h.summary && (
+          <span className="text-muted leading-snug line-clamp-2" dir="auto">
+            {h.summary}
+          </span>
+        )}
+        <span className="text-[11px] text-muted">
+          <span dir="auto">{h.source}</span>
+          {day ? ` · ${dayLabel(day, locale)}` : ''}
+        </span>
+      </span>
+      {href && (
+        <span aria-hidden className="shrink-0 text-muted">
+          ↗
+        </span>
+      )}
+    </>
+  );
+  const cls = `w-full py-2 flex items-start gap-2 text-start rounded transition-colors ${lit ? 'bg-accent/15' : ''}`;
+  return (
+    <li id={anchor} className="scroll-mt-4">
+      {!href ? (
+        <div className={cls}>{body}</div>
+      ) : isNative ? (
+        <button type="button" className={`${cls} hover:bg-surface-2/50`} aria-label={`${t('news_open')}: ${h.title}`} onClick={() => void openExternalNative(href)}>
+          {body}
+        </button>
+      ) : (
+        <a href={href} target="_blank" rel="noopener noreferrer" className={`${cls} hover:bg-surface-2/50`} aria-label={`${t('news_open')}: ${h.title}`}>
+          {body}
+        </a>
+      )}
+    </li>
   );
 }
 
