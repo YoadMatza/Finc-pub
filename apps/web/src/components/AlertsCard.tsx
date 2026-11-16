@@ -7,7 +7,7 @@ import { errorText } from '../limits';
 import type { AlertType, AlertsPayload } from '../types';
 import { Card, Empty, Spinner } from './ui';
 
-const TYPES: AlertType[] = ['missing_fixed', 'big_purchase', 'card_testing', 'instalment_purchase', 'card_bill_gap', 'refund_matched', 'over_target', 'spend_limit', 'price_change', 'sync_error', 'stale_sync', 'otp_needed', 'candidate', 'uncategorised', 'weekly_summary'];
+const TYPES: AlertType[] = ['missing_fixed', 'big_purchase', 'card_testing', 'unusual_charge', 'instalment_purchase', 'card_bill_gap', 'refund_matched', 'over_target', 'spend_limit', 'price_change', 'sync_error', 'stale_sync', 'otp_needed', 'candidate', 'uncategorised', 'weekly_summary'];
 
 /** The two money-out thresholds (whole shekels), edited as a draft and saved on blur, Enter or the save button. */
 function AmountsEditor({ amounts, saving, onSave }: { amounts: { big: number; urgent: number }; saving: boolean; onSave: (next: { big: number; urgent: number }) => void }) {
@@ -143,6 +143,17 @@ export function AlertsCard() {
 
         {/* keyed on the saved values, so the draft resets to what the server holds after each save */}
         <AmountsEditor key={`${d.config.amounts.big}-${d.config.amounts.urgent}`} amounts={d.config.amounts} saving={saveAmounts.isPending} onSave={(a) => saveAmounts.mutate(a)} />
+
+        <label className="flex items-center gap-2 text-sm">
+          <span className="text-muted">{t('alert_unusual_factor')}</span>
+          <select className="input w-20" value={d.config.unusualFactor} onChange={(e) => patch.mutate({ unusualFactor: Number(e.target.value) })}>
+            {[2, 3, 4, 5, 6, 8, 10].map((n) => (
+              <option key={n} value={n}>
+                ×{n}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
           <label className="flex items-center gap-2">

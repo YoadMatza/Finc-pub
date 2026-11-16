@@ -13,7 +13,7 @@ import { OFFSITE_SETTINGS, OFFSITE_STALE_DAYS } from '../backup/offsite.js';
 import { ENGINE_PROCESSED_SETTING } from '../engine/run.js';
 import { paidBackLine } from '../engine/paidback.js';
 import { listTransactions } from '../hub/transactions.js';
-import { DEFAULT_AMOUNTS, MONEY_SINCE_SETTING, type MoneyAlert, collectMoneyAlerts, moneySince } from './money.js';
+import { DEFAULT_AMOUNTS, MONEY_SINCE_SETTING, type MoneyAlert, UNUSUAL, collectMoneyAlerts, moneySince } from './money.js';
 import { telegramSend } from './telegram.js';
 import { limitAlerts } from './limit.js';
 import { errorPhrase, isErrorKind } from '../errors.js';
@@ -26,7 +26,7 @@ export * from './limit.js';
  * `big_purchase` is the per-transaction "money out" alert since 2026-11-10 (alerts/money.ts); the type keeps
  * its old name so an existing on/off choice keeps its meaning.
  */
-export const ALERT_TYPES = ['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'refund_matched', 'over_target', 'price_change', 'candidate', 'uncategorised', 'weekly_summary', 'spend_limit'] as const;
+export const ALERT_TYPES = ['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'unusual_charge', 'refund_matched', 'over_target', 'price_change', 'candidate', 'uncategorised', 'weekly_summary', 'spend_limit'] as const;
 export type AlertType = (typeof ALERT_TYPES)[number];
 export const CHANNELS = ['telegram'] as const;
 export type Channel = (typeof CHANNELS)[number];
@@ -37,10 +37,12 @@ export interface AlertConfig {
   weekly: { day: number; hour: number }; // 0 = Sunday
   /** Whole shekels: money out at `big` or more alerts; at `urgent` or more it also ignores quiet hours. */
   amounts: { big: number; urgent: number };
+  /** unusual_charge: a charge more than this many times the merchant's usual (2–10, default 3) */
+  unusualFactor: number;
   telegramChatId: string | null;
 }
 
-const DEFAULT_ON = new Set<AlertType>(['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'refund_matched', 'over_target', 'price_change', 'weekly_summary', 'spend_limit']);
+const DEFAULT_ON = new Set<AlertType>(['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'unusual_charge', 'refund_matched', 'over_target', 'price_change', 'weekly_summary', 'spend_limit']);
 
 export function alertConfig(db: Db): AlertConfig {
   const matrix = {} as AlertConfig['matrix'];
@@ -72,10 +74,12 @@ export function alertConfig(db: Db): AlertConfig {
   } catch {
     /* default */
   }
-  return { matrix, quiet, weekly, amounts, telegramChatId: getSetting(db, 'telegram.chatId') };
+  const f = Number(getSetting(db, 'alerts.unusualFactor'));
+  const unusualFactor = Number.isInteger(f) && f >= 2 && f <= 10 ? f : UNUSUAL.factor;
+  return { matrix, quiet, weekly, amounts, unusualFactor, telegramChatId: getSetting(db, 'telegram.chatId') };
 }
 
-export function setAlertConfig(db: Db, patch: { matrix?: Partial<Record<AlertType, Partial<Record<Channel, boolean>>>>; quiet?: AlertConfig['quiet'] | 'off'; weekly?: Partial<AlertConfig['weekly']>; amounts?: Partial<AlertConfig['amounts']>; telegramChatId?: string | null }): AlertConfig {
+export function setAlertConfig(db: Db, patch: { matrix?: Partial<Record<AlertType, Partial<Record<Channel, boolean>>>>; quiet?: AlertConfig['quiet'] | 'off'; weekly?: Partial<AlertConfig['weekly']>; amounts?: Partial<AlertConfig['amounts']>; unusualFactor?: number; telegramChatId?: string | null }): AlertConfig {
   const cur = alertConfig(db);
   if (patch.matrix) {
     const next = { ...cur.matrix } as AlertConfig['matrix'];
@@ -88,6 +92,10 @@ export function setAlertConfig(db: Db, patch: { matrix?: Partial<Record<AlertTyp
     const next = { ...cur.amounts, ...patch.amounts };
     if (!(next.big >= 1 && next.urgent >= next.big)) throw new Error('the urgent amount must be at least the alert amount, and both positive');
     setSetting(db, 'alerts.amounts', JSON.stringify(next));
+  }
+  if (patch.unusualFactor !== undefined) {
+    if (!(Number.isInteger(patch.unusualFactor) && patch.unusualFactor >= 2 && patch.unusualFactor <= 10)) throw new Error('the unusual-charge multiplier is a whole number from 2 to 10');
+    setSetting(db, 'alerts.unusualFactor', String(patch.unusualFactor));
   }
   if (patch.telegramChatId !== undefined) setSetting(db, 'telegram.chatId', patch.telegramChatId);
   return alertConfig(db);
@@ -199,6 +207,13 @@ export function moneyAlertText(a: MoneyAlert, lang: 'he' | 'en'): string {
       return he
         ? `🚨 ${a.detail} חיובים ב־<b>${nm}</b> באותו יום (${day}, סה״כ ${amt}). ודא שזה אתה.`
         : `🚨 ${a.detail} charges at <b>${nm}</b> on one day (${day}, ${amt} in total). Make sure it was you.`;
+    case 'unusual_charge': {
+      const usual = ils(a.reference ?? 0, lang);
+      const pending = a.pending ? (he ? ', ממתין לאישור' : ', pending') : '';
+      return he
+        ? `🔎 חריג ל־<b>${nm}</b>: ${amt} (${day}${pending}), בדרך כלל בערך ${usual} (${a.detail} חיובים בשנה האחרונה). כדאי לבדוק.`
+        : `🔎 Unusual for <b>${nm}</b>: ${amt} (${day}${pending}), usually about ${usual} (${a.detail} charges in the last year). Worth a look.`;
+    }
   }
 }
 
@@ -207,6 +222,7 @@ const MONEY_KIND_TO_TYPE: Record<MoneyAlert['kind'], AlertType> = {
   instalment_purchase: 'instalment_purchase',
   card_bill_gap: 'card_bill_gap',
   card_testing: 'card_testing',
+  unusual_charge: 'unusual_charge',
 };
 
 /** Insight kinds that reach Telegram. big_purchase is not here: the per-transaction money alerts replace it. */
@@ -239,7 +255,7 @@ export function collectAlerts(db: Db, opts: { lang?: 'he' | 'en'; overview?: Hub
     if (a.key.startsWith('spend_limit:80:') && alreadySent(db, a.key.replace(':80:', ':100:'), 'telegram')) continue;
     out.push({ type: 'spend_limit', key: a.key, text: a.text });
   }
-  const { amounts } = alertConfig(db);
+  const { amounts, unusualFactor } = alertConfig(db);
   // only rows the engine has processed (never mid-sync), and only the last few days (MONEY_LOOKBACK_DAYS)
   const processedUntil = getSetting(db, ENGINE_PROCESSED_SETTING) ?? '';
   // After a restore the first sync re-inserts everything since the backup as "new" rows (and alert_log went back in
@@ -248,7 +264,7 @@ export function collectAlerts(db: Db, opts: { lang?: 'he' | 'en'; overview?: Hub
   const restoredAt = getSetting(db, RESTORED_AT_SETTING);
   if (restoredAt) {
     if (processedUntil <= restoredAt) return out;
-    const missed = collectMoneyAlerts(db, { since: moneySince(db, opts.now), bigIls: amounts.big, urgentIls: amounts.urgent, processedUntil, now: opts.now ?? new Date() }).length;
+    const missed = collectMoneyAlerts(db, { since: moneySince(db, opts.now), bigIls: amounts.big, urgentIls: amounts.urgent, unusualFactor, processedUntil, now: opts.now ?? new Date() }).length;
     setSetting(db, MONEY_SINCE_SETTING, processedUntil);
     setSetting(db, RESTORED_AT_SETTING, null);
     const he = lang === 'he';
@@ -262,7 +278,7 @@ export function collectAlerts(db: Db, opts: { lang?: 'he' | 'en'; overview?: Hub
     });
     return out;
   }
-  for (const m of collectMoneyAlerts(db, { since: moneySince(db, opts.now), bigIls: amounts.big, urgentIls: amounts.urgent, processedUntil, now: opts.now ?? new Date() })) {
+  for (const m of collectMoneyAlerts(db, { since: moneySince(db, opts.now), bigIls: amounts.big, urgentIls: amounts.urgent, unusualFactor, processedUntil, now: opts.now ?? new Date() })) {
     out.push({ type: MONEY_KIND_TO_TYPE[m.kind], key: m.key, text: moneyAlertText(m, lang), urgent: m.urgent, money: true });
   }
   return out;

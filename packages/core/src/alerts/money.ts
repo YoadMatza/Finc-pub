@@ -9,6 +9,7 @@
  */
 import { getSetting, setSetting } from '../ai/settings.js';
 import type { Db } from '../db/db.js';
+import { PERSON_TO_PERSON } from '../engine/p2p.js';
 
 export const MONEY_SINCE_SETTING = 'alerts.moneySince';
 /**
@@ -22,8 +23,14 @@ const PENDING_TWIN_TOLERANCE = 0.15;
 /** Charges at one merchant on one card in one day that look like card testing. */
 export const CARD_TESTING_MIN = 4;
 export const DEFAULT_AMOUNTS = { big: 1000, urgent: 5000 } as const;
+/**
+ * Unusual charge (wave 5 proposal research_notes/proposals/unusual-charge-alert.md): a charge more than `factor` times
+ * the merchant's usual (median of its completed charges on the same account in the last year, at least `minHistory`
+ * of them) and at least `minAboveIls` above it.
+ */
+export const UNUSUAL = { factor: 3, minHistory: 4, minAboveIls: 200, windowDays: 365 } as const;
 
-export type MoneyAlertKind = 'money_out' | 'instalment_purchase' | 'card_bill_gap' | 'card_testing';
+export type MoneyAlertKind = 'money_out' | 'instalment_purchase' | 'card_bill_gap' | 'card_testing' | 'unusual_charge';
 
 export interface MoneyAlert {
   kind: MoneyAlertKind;
@@ -36,8 +43,10 @@ export interface MoneyAlert {
   accountType: string;
   pending: boolean;
   transfer: boolean;
-  /** card_bill_gap: debit minus the card rows it settles (negative = the bank took more); instalment_purchase: number of payments; card_testing: number of charges. */
+  /** card_bill_gap: debit minus the card rows it settles (negative = the bank took more); instalment_purchase: number of payments; card_testing: number of charges; unusual_charge: past charges counted. */
   detail?: number;
+  /** unusual_charge: the merchant's usual charge (negative agorot, the median). */
+  reference?: number;
   /** Sent even in quiet hours. */
   urgent: boolean;
 }
@@ -82,6 +91,10 @@ export function collectMoneyAlerts(
     processedUntil?: string;
     /** For the lookback window; omit to look back without a limit (tests, replays). */
     now?: Date;
+    /** unusual_charge: how many times the merchant's usual (default UNUSUAL.factor) */
+    unusualFactor?: number;
+    /** only charges of this cash-flow month (the hub's attention list) */
+    month?: string;
   },
 ): MoneyAlert[] {
   const big = Math.round((opts.bigIls ?? DEFAULT_AMOUNTS.big) * 100);
@@ -96,10 +109,10 @@ export function collectMoneyAlerts(
        from "transaction" t join account a on a.id = t.account_id
        left join merchant m on m.id = t.merchant_id
        left join recurring_stream rs on rs.id = t.recurring_stream_id
-       where t.created_at >= ? and t.created_at <= ? and t.status != 'voided' and t.amount_ils < 0
+       where t.created_at >= ? and t.created_at <= ? and t.status != 'voided' and t.amount_ils < 0 and (? = '' or t.cashflow_month = ?)
        order by t.txn_date, t.id`,
     )
-    .all(from, opts.processedUntil ?? '9999') as Row[];
+    .all(from, opts.processedUntil ?? '9999', opts.month ?? '', opts.month ?? '') as Row[];
 
   const out: MoneyAlert[] = [];
   const base = (r: Row) => ({ txnId: r.id, date: r.txn_date, name: r.name, accountType: r.account_type, pending: r.status === 'pending', transfer: r.kind === 'transfer' });
@@ -119,6 +132,31 @@ export function collectMoneyAlerts(
        and p.amount_ils <= ? limit 1`,
   );
   const createdAt = c.prepare(`select created_at from "transaction" where id = ?`);
+  // the merchant's usual: its completed charges on the same account in the year before this one (instalments,
+  // transfers and card bills are not "usual" spending)
+  const history = c.prepare(
+    `select amount_ils a from "transaction" where account_id = ? and merchant_id = ? and id <> ? and status = 'completed' and amount_ils < 0
+       and installment_plan_id is null and coalesce(kind, '') not in ('transfer', 'settlement', 'refund')
+       and txn_date < ? and txn_date >= date(?, '-${UNUSUAL.windowDays} days')`,
+  );
+  const factor = opts.unusualFactor ?? UNUSUAL.factor;
+  const minAbove = UNUSUAL.minAboveIls * 100;
+  const unusual = (r: Row): MoneyAlert | null => {
+    if (r.merchant_id === null || r.kind === 'transfer' || r.kind === 'settlement' || PERSON_TO_PERSON.test(r.name)) return null;
+    const past = (history.all(r.account_id, r.merchant_id, r.id, r.txn_date, r.txn_date) as Array<{ a: number }>).map((x) => -x.a).sort((x, y) => x - y);
+    if (past.length < UNUSUAL.minHistory) return null;
+    const mid = past.length / 2;
+    const usual = past.length % 2 ? past[Math.floor(mid)]! : Math.round((past[mid - 1]! + past[mid]!) / 2);
+    const amount = -r.amount_ils;
+    const threshold = Math.max(usual * factor, usual + minAbove);
+    if (amount <= usual * factor || amount - usual < minAbove) return null;
+    if (r.status === 'completed') {
+      const at = (createdAt.get(r.id) as { created_at: string }).created_at;
+      // the same purchase seen earlier as pending, already unusual then: one alert
+      if (earlierPending.get(r.account_id, r.txn_date, r.id, at, r.merchant_id, r.name, r.amount_ils, r.amount_ils, -threshold)) return null;
+    }
+    return { kind: 'unusual_charge', key: `unusual:${r.id}`, ...base(r), amount: r.amount_ils, reference: -usual, detail: past.length, urgent: false };
+  };
 
   for (const r of fresh) {
     if (r.kind === 'settlement') {
@@ -141,7 +179,11 @@ export function collectMoneyAlerts(
       continue;
     }
     if (r.stream_state === 'confirmed') continue; // expected; price changes alert on their own
-    if (-r.amount_ils < big) continue;
+    if (-r.amount_ils < big) {
+      const u = unusual(r);
+      if (u) out.push(u);
+      continue;
+    }
     if (r.status === 'completed') {
       const at = (createdAt.get(r.id) as { created_at: string }).created_at;
       // skip only when that pending copy was itself big enough to have alerted

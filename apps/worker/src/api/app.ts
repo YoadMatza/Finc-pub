@@ -1325,6 +1325,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         weekly: z.object({ day: z.number().int().min(0).max(6).optional(), hour: z.number().int().min(0).max(23).optional() }).optional(),
         // whole shekels: money out from `big` is alerted, from `urgent` it goes out even in quiet hours
         amounts: z.object({ big: z.number().int().positive().max(10_000_000).optional(), urgent: z.number().int().positive().max(10_000_000).optional() }).optional(),
+        // unusual-charge alert: a charge more than this many times the merchant's usual
+        unusualFactor: z.number().int().min(2).max(10).optional(),
       })
       .parse(await c.req.json());
     const { amounts, ...rest } = defined(body) as Parameters<typeof setAlertConfig>[1];

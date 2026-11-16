@@ -5,6 +5,7 @@ import { type Db, openDb } from '../db/db.js';
 import { runEngine } from '../engine/run.js';
 import { ingestBatch } from '../ingest/ingest.js';
 import type { NormalizedRow } from '../ingest/types.js';
+import { hubOverview } from '../hub/overview.js';
 import { collectAlerts, dispatchAlerts, setAlertConfig } from './index.js';
 import { MONEY_SINCE_SETTING, collectMoneyAlerts, moneySince } from './money.js';
 
@@ -206,5 +207,54 @@ describe('money alerts in the dispatcher', () => {
     expect(collected).toContain('HUGE SHOP');
     expect(collected).not.toContain('MID SHOP');
     expect(() => setAlertConfig(db, { amounts: { big: 9000, urgent: 5000 } })).toThrow();
+  });
+});
+
+describe('unusual-charge alert (wave 5 proposal, 2026-11-16)', () => {
+  // a supermarket habit: ₪100–₪140, eight times before November (usual: ₪120)
+  const habit = (n = 8) => Array.from({ length: n }, (_, i) => row(`2026-${String(3 + i).padStart(2, '0')}-12`, -(10000 + (i % 3) * 2000), 'SUPER YUDA'));
+
+  it('a charge far above the merchant\'s usual alerts with the usual amount and the count', () => {
+    const { db, card, ingest } = setup();
+    ingest(card, habit(), BEFORE);
+    ingest(card, [row('2026-11-04', -98000, 'SUPER YUDA')], AFTER); // under the ₪1,000 money-out threshold
+    runEngine(db);
+    const a = collectMoneyAlerts(db, { since: SINCE }).filter((x) => x.kind === 'unusual_charge');
+    expect(a).toHaveLength(1);
+    expect(a[0]).toMatchObject({ amount: -98000, reference: -12000, detail: 8, urgent: false });
+    setSetting(db, MONEY_SINCE_SETTING, SINCE);
+    const text = collectAlerts(db, { lang: 'en', now: new Date('2026-11-05T09:00:00Z') }).find((x) => x.type === 'unusual_charge')?.text ?? '';
+    expect(text).toContain('Unusual');
+    expect(text).toContain('120');
+    // the hub's attention list shows the same charge, linked to the transaction
+    const insight = hubOverview(db, '2026-11').attention.find((i) => i.kind === 'unusual_charge');
+    expect(insight).toMatchObject({ amount: -98000, reference: -12000, count: 8, txnId: a[0]!.txnId });
+  });
+
+  it('not for a normal charge, not under ₪200 above the usual, and not without 4 past charges', () => {
+    const { db, card, ingest } = setup();
+    ingest(card, [...habit(), ...Array.from({ length: 3 }, (_, i) => row(`2026-0${5 + i}-03`, -3000, 'KIOSK'))], BEFORE);
+    // 3x a ₪30 kiosk is only ₪60 above; a new shop has no history; the supermarket at its usual amount
+    ingest(card, [row('2026-11-04', -13000, 'SUPER YUDA'), row('2026-11-04', -12000, 'KIOSK'), row('2026-11-04', -90000, 'NEW SHOP')], AFTER);
+    runEngine(db);
+    expect(collectMoneyAlerts(db, { since: SINCE }).filter((x) => x.kind === 'unusual_charge')).toEqual([]);
+  });
+
+  it('one alert per charge: a charge that already alerts as money out does not alert twice', () => {
+    const { db, card, ingest } = setup();
+    ingest(card, habit(), BEFORE);
+    ingest(card, [row('2026-11-04', -250000, 'SUPER YUDA')], AFTER);
+    runEngine(db);
+    expect(kinds(db)).toEqual(['money_out:SUPER YUDA:-2500']);
+  });
+
+  it('the multiplier is a setting (2–10)', () => {
+    const { db, card, ingest } = setup();
+    ingest(card, habit(), BEFORE);
+    ingest(card, [row('2026-11-04', -98000, 'SUPER YUDA')], AFTER);
+    runEngine(db);
+    expect(collectMoneyAlerts(db, { since: SINCE, unusualFactor: 10 }).filter((x) => x.kind === 'unusual_charge')).toEqual([]);
+    expect(setAlertConfig(db, { unusualFactor: 4 }).unusualFactor).toBe(4);
+    expect(() => setAlertConfig(db, { unusualFactor: 1 })).toThrow();
   });
 });

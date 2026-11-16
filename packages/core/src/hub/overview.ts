@@ -16,8 +16,9 @@ import { type BandRow, type Forecast, forecastMonth } from '../engine/forecast.j
 import { type NowIncome, nowIncome } from './now.js';
 import { type HubLimit, spendLimitStatus } from './limit.js';
 import { VARIABLE_ROW_SQL } from '../engine/paidback.js';
+import { collectMoneyAlerts } from '../alerts/money.js';
 
-export type InsightKind = 'missing_fixed' | 'refund_matched' | 'uncategorised' | 'candidate' | 'price_change' | 'big_purchase' | 'sync_error' | 'stale_sync' | 'integrity' | 'suggested_links' | 'over_target';
+export type InsightKind = 'missing_fixed' | 'refund_matched' | 'uncategorised' | 'candidate' | 'price_change' | 'big_purchase' | 'unusual_charge' | 'sync_error' | 'stale_sync' | 'integrity' | 'suggested_links' | 'over_target';
 
 /** A scraped institution with no successful sync for longer than this is reported as stale_sync. */
 export const STALE_SYNC_HOURS = 36;
@@ -375,6 +376,13 @@ function insights(db: Db, s: MonthSummary, month: string, today: string, isCurre
     )
     .all(month) as Array<{ id: number; amount_ils: number; txn_date: string; name: string }>;
   for (const r of big) out.push({ key: `big:${r.id}`, kind: 'big_purchase', severity: 'info', amount: r.amount_ils, name: r.name, date: r.txn_date, txnId: r.id });
+
+  // charges far above that merchant's usual this month (the same rule as the Telegram alert, alerts/money.ts)
+  const f = Number(getSetting(db, 'alerts.unusualFactor'));
+  const unusualFactor = Number.isInteger(f) && f >= 2 && f <= 10 ? f : undefined;
+  for (const u of collectMoneyAlerts(db, { since: '', month, ...(unusualFactor ? { unusualFactor } : {}) }).filter((a) => a.kind === 'unusual_charge').slice(0, 5)) {
+    out.push({ key: `unusual:${u.txnId}`, kind: 'unusual_charge', severity: 'warn', amount: u.amount, reference: u.reference ?? 0, count: u.detail ?? 0, name: u.name, date: u.date, txnId: u.txnId });
+  }
 
   for (const g of breakdown) {
     if (g.basis !== 'targets' || g.section !== 'variable') continue;
