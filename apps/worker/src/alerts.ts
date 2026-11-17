@@ -3,11 +3,13 @@
  * (after every sync and once an hour), and the one-time-code relay that lets the owner answer a bank's
  * SMS challenge from Telegram while the scraper waits.
  */
-import { type Db, type SecurityEventInput, type Vault, alertConfig, cleanErrorText, dispatchAlerts, getSetting, looksLikeTelegramToken, recordSecurityEvent, setSetting, telegramSend, telegramWaitForReply } from '@finc/core';
+import { type Db, type SecurityEventInput, type Vault, alertConfig, cleanErrorText, dispatchAlerts, getSetting, looksLikeTelegramToken, pushTargets, queuePush, recordSecurityEvent, setDevicePushToken, setSetting, telegramSend, telegramWaitForReply } from '@finc/core';
 import { Cron } from 'croner';
 import { MAIN_BOT_ID_SETTING, botIdOf, readAlarmBot, scrub } from './alarm.js';
 import type { OtpProvider } from './connectors/otp.js';
 import { log } from './logger.js';
+import { otpBroker } from './otp-broker.js';
+import { FcmSender, type PushSender, fcmCredentials } from './push-fcm.js';
 
 export function telegramToken(vault: Vault | null): string | null {
   if (!vault || vault.locked) return null;
@@ -27,9 +29,32 @@ export function runDispatch(db: Db, vault: Vault | null, reason: string, force =
   return next;
 }
 
+// --- push alerts (research_notes/proposals/push-alerts.md): the phone app as a second channel
+
+let pushSenderOverride: PushSender | null = null;
+/** Tests replace the Firebase sender. */
+export function setPushSender(s: PushSender | null): void {
+  pushSenderOverride = s;
+}
+/** The push sender while push is set up and the vault is open; null otherwise. */
+export function pushSender(vault: Vault | null): PushSender | null {
+  if (pushSenderOverride) return pushSenderOverride;
+  return fcmCredentials(vault) ? new FcmSender({ creds: () => fcmCredentials(vault) }) : null;
+}
+/** Wakes the app devices; a token Firebase no longer knows is dropped from its device. */
+export async function wakeApps(db: Db, sender: PushSender, tokens: string[]): Promise<{ ok: boolean; error?: string }> {
+  const r = await sender.ping(tokens);
+  if (r.invalid.length) {
+    for (const t of pushTargets(db)) if (r.invalid.includes(t.token)) setDevicePushToken(db, t.deviceId, null);
+    log.info({ dropped: r.invalid.length }, 'push: stale device tokens dropped');
+  }
+  return r.error === undefined ? { ok: r.ok } : { ok: r.ok, error: r.error };
+}
+
 async function dispatchOnce(db: Db, vault: Vault | null, reason: string, force: boolean): Promise<void> {
   try {
-    const r = await dispatchAlerts(db, { telegramToken: telegramToken(vault), force });
+    const sender = pushSender(vault);
+    const r = await dispatchAlerts(db, { telegramToken: telegramToken(vault), force, push: sender ? { ping: (tokens) => wakeApps(db, sender, tokens) } : null });
     if (r.sent.length || r.skipped.some((s) => s.reason !== 'off')) log.info({ reason, sent: r.sent.map((s) => s.type), skipped: r.skipped.filter((s) => s.reason !== 'off').map((s) => `${s.type}:${s.reason}`) }, 'alerts: dispatched');
   } catch (e) {
     log.error({ err: e instanceof Error ? e.message : String(e) }, 'alerts: dispatch failed');
@@ -45,6 +70,38 @@ export function startAlertTicker(db: Db, getVault: () => Vault | null, timezone:
  * When a bank asks for a one-time code during an unattended sync, ask on Telegram and wait up to
  * four minutes for the reply. Falls back to failing the sync (which raises a sync_error alert).
  */
+/**
+ * A bank's one-time code from the phone app or Telegram, whichever answers first (push-alerts.md P4): the request opens
+ * in the broker, the app is woken with an `otp_needed` row that opens a code field, and Telegram asks as before.
+ */
+export function appOrTelegramOtp(db: Db, getVault: () => Vault | null): OtpProvider {
+  return async (ctx) => {
+    const TIMEOUT = 4 * 60_000;
+    const vault = getVault();
+    const sender = pushSender(vault);
+    const devices = pushTargets(db).length;
+    const tg = telegramToken(vault) && alertConfig(db).telegramChatId ? telegramOtp(db, getVault)(ctx) : null;
+    if (!sender || !devices) {
+      if (tg) return tg;
+      throw new Error(`${ctx.institutionId} asked for a one-time code and neither the app (push) nor Telegram is set up to relay it`);
+    }
+    const req = otpBroker.request(ctx.institutionId, TIMEOUT);
+    const lang = getSetting(db, 'ui.language') ?? 'he';
+    const text = lang === 'he' ? `🔐 ${ctx.institutionId} מבקש קוד חד־פעמי. הקש כדי להזין אותו.` : `🔐 ${ctx.institutionId} asks for a one-time code. Tap to enter it.`;
+    const q = queuePush(db, [{ type: 'otp_needed', key: `otp:${req.id}`, text, urgent: true, otpId: req.id }]);
+    void wakeApps(db, sender, q.tokens);
+    log.info({ institution: ctx.institutionId, telegram: !!tg }, 'otp: asked in the app, waiting for the code');
+    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${ctx.institutionId} asked for a one-time code and none arrived within 4 minutes`)), TIMEOUT).unref());
+    try {
+      // a Telegram failure (or its own timeout later) must not end the wait for the app, nor go unhandled
+      const tgQuiet = tg ? tg.catch(() => new Promise<string>(() => undefined)) : null;
+      return await Promise.race([req.code, ...(tgQuiet ? [tgQuiet] : []), timeout]);
+    } finally {
+      req.cancel();
+    }
+  };
+}
+
 export function telegramOtp(db: Db, getVault: () => Vault | null): OtpProvider {
   return async ({ institutionId }) => {
     const token = telegramToken(getVault());

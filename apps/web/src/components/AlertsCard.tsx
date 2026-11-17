@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type KeyboardEvent, useState } from 'react';
+import { Link } from 'react-router';
+import { mergeRecent, pushStatus } from '../alertsPage';
 import { ApiError, api } from '../api';
 import { relTime } from '../format';
 import { type Key, useI18n } from '../i18n';
 import { errorText } from '../limits';
-import type { AlertType, AlertsPayload } from '../types';
+import type { AlertType, AlertsPayload, PushTestResult } from '../types';
 import { Card, Empty, Spinner } from './ui';
 
 const TYPES: AlertType[] = ['missing_fixed', 'big_purchase', 'card_testing', 'unusual_charge', 'instalment_purchase', 'card_bill_gap', 'refund_matched', 'over_target', 'spend_limit', 'price_change', 'sync_error', 'stale_sync', 'otp_needed', 'candidate', 'uncategorised', 'weekly_summary', 'image_old'];
@@ -74,12 +76,32 @@ export function AlertsCard() {
   const saveAmounts = useMutation({ mutationFn: (amounts: { big: number; urgent: number }) => api.patch('/api/alerts', { amounts }), onSuccess: () => done('✓'), onError: fail });
   // P2-02: test sends are capped per hour; a 429 says when the next one is allowed
   const test = useMutation({ mutationFn: (weekly: boolean) => api.post('/api/alerts/test', { weekly }), onMutate: () => setMsg(null), onSuccess: () => done('✓'), onError: (e) => setMsg(errorText(e, 'alerts', t, locale)) });
+  // a test alert to every app device (push-alerts.md step 5); the result shows next to the button
+  const [pushMsg, setPushMsg] = useState<string | null>(null);
+  const pushTest = useMutation({
+    mutationFn: () => api.post<PushTestResult>('/api/alerts/push-test'),
+    onMutate: () => setPushMsg(null),
+    onSuccess: (r) => {
+      setPushMsg(r.ok ? t('push_test_ok', { n: r.devices }) : t('push_test_failed', { e: r.error ?? '?' }));
+      void qc.invalidateQueries({ queryKey: ['alerts'] });
+    },
+    onError: (e) => setPushMsg(t('push_test_failed', { e: errorText(e, 'alerts', t, locale) })),
+  });
   if (q.isPending) return <Spinner />;
   if (q.error || !q.data) return null;
   const d = q.data;
   const tg = d.telegram;
   const ready = tg.tokenInVault && tg.tokenValid && !!tg.chatId;
   const canEdit = d.canEdit !== false;
+  const ps = pushStatus(d.push);
+  const pushReady = ps.key === 'push_status_devices';
+  const colHead = (
+    <div className="flex items-center gap-2 text-xs text-muted pb-1">
+      <span className="flex-1" />
+      <span className="w-16 text-center">{t('push_col_telegram')}</span>
+      <span className="w-16 text-center">{t('push_col_app')}</span>
+    </div>
+  );
   return (
     <Card title={t('alerts')}>
       <div className="flex flex-col gap-4">
@@ -129,15 +151,34 @@ export function AlertsCard() {
             </div>
           )}
           {!canEdit && <p className="text-xs text-muted">{t('alerts_home_only')}</p>}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`chip ${pushReady ? 'text-pos border-pos/40' : 'text-warn border-warn/40'}`}>{ps.key === 'push_status_devices' ? t(ps.key, { n: ps.n }) : t(ps.key)}</span>
+            {canEdit && (
+              <button className="btn btn-sm" disabled={!pushReady || pushTest.isPending} onClick={() => pushTest.mutate()}>
+                {t('push_send_test')}
+              </button>
+            )}
+            {pushMsg && <span className="text-xs text-muted">{pushMsg}</span>}
+            <Link to="/alerts" className="text-xs text-accent ms-auto">
+              {t('alerts_page_open')}
+            </Link>
+          </div>
         </div>
 
         <fieldset disabled={!canEdit} className="contents">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-sm">
+          {colHead}
+          <div className="hidden sm:block">{colHead}</div>
           {TYPES.map((ty) => (
-            <label key={ty} className="flex items-center justify-between gap-2 py-1">
-              <span>{t(`alert_${ty}` as Key)}</span>
-              <input type="checkbox" checked={d.config.matrix[ty]?.telegram ?? false} onChange={(e) => patch.mutate({ matrix: { [ty]: { telegram: e.target.checked } } })} />
-            </label>
+            <div key={ty} className="flex items-center gap-2 py-1">
+              <span className="flex-1 min-w-0">{t(`alert_${ty}` as Key)}</span>
+              <span className="w-16 flex justify-center">
+                <input type="checkbox" aria-label={`${t(`alert_${ty}` as Key)}: ${t('push_col_telegram')}`} checked={d.config.matrix[ty]?.telegram ?? false} onChange={(e) => patch.mutate({ matrix: { [ty]: { telegram: e.target.checked } } })} />
+              </span>
+              <span className="w-16 flex justify-center">
+                <input type="checkbox" aria-label={`${t(`alert_${ty}` as Key)}: ${t('push_col_app')}`} checked={d.config.matrix[ty]?.push ?? false} onChange={(e) => patch.mutate({ matrix: { [ty]: { push: e.target.checked } } })} />
+              </span>
+            </div>
           ))}
         </div>
 
@@ -187,11 +228,11 @@ export function AlertsCard() {
           <span className="text-sm text-muted">{t('recent_alerts')}</span>
           {d.recent.length ? (
             <div className="flex flex-col divide-y divide-border text-sm">
-              {d.recent.slice(0, 10).map((a) => (
+              {mergeRecent(d.recent).slice(0, 10).map((a) => (
                 <div key={a.id} className="py-1.5 flex items-start gap-2">
-                  <span className={`shrink-0 ${a.ok ? 'text-pos' : 'text-neg'}`}>{a.ok ? '✓' : '✗'}</span>
-                  <span className="flex-1 min-w-0 truncate" dir="auto" title={a.text.replace(/<[^>]+>/g, '')}>
-                    {a.text.replace(/<[^>]+>/g, '')}
+                  <span className={`shrink-0 ${a.failed ? 'text-neg' : 'text-pos'}`}>{a.failed ? '✗' : '✓'}</span>
+                  <span className="flex-1 min-w-0 truncate" dir="auto" title={a.text}>
+                    {a.text}
                   </span>
                   <span className="text-xs text-muted shrink-0">{relTime(a.sentAt, locale)}</span>
                 </div>

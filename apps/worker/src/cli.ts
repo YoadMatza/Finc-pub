@@ -21,6 +21,7 @@ import { workerUp } from './cli/worker-client.js';
 import { registerHealthCommands } from './cli/health.js';
 import { registerImportCommands } from './cli/import.js';
 import { registerMcpCommands } from './cli/mcp.js';
+import { registerPushCommands } from './cli/push.js';
 import { registerMonthCommands } from './cli/month.js';
 import { registerPanicCommands } from './cli/panic.js';
 import { registerRecurringCommands } from './cli/recurring.js';
@@ -75,6 +76,7 @@ registerAlertCommands(program);
 registerPanicCommands(program);
 registerEventsCommands(program);
 registerMcpCommands(program);
+registerPushCommands(program);
 
 try {
   await program.parseAsync(process.argv);

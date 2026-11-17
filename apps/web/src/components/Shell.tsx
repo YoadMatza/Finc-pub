@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
-import { NavLink, useLocation } from 'react-router';
+import { type ReactNode, useEffect } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router';
 import { api } from '../api';
 import { useI18n } from '../i18n';
+import { takeLaunchPath } from '../native';
 import type { Health, ReviewInbox } from '../types';
 
 /** Minimal line icons (24×24 strokes) so the navigation reads as an app, not a chat. */
@@ -14,6 +15,7 @@ const ICONS = {
   trends: 'M3 17l6-6 4 4 8-8M15 7h6v6',
   events: 'M20 12V7a2 2 0 0 0-2-2h-3.2a2 2 0 0 1-1.4-.6l-.8-.8A2 2 0 0 0 11.2 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7M16 16h6M19 13v6',
   chat: 'M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12zM8 12h.01M12 12h.01M16 12h.01',
+  alerts: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0',
   accounts: 'M3 10l9-6 9 6M4 10v10h16V10M9 14v6M15 14v6',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
 } as const;
@@ -34,6 +36,7 @@ const items = [
   { to: '/trends', key: 'nav_trends', icon: 'trends' },
   { to: '/events', key: 'nav_events', icon: 'events', mobile: false },
   { to: '/chat', key: 'nav_chat', icon: 'chat', mobile: false },
+  { to: '/alerts', key: 'alerts_page_nav', icon: 'alerts', mobile: false },
   { to: '/accounts', key: 'nav_accounts', icon: 'accounts' },
   { to: '/settings', key: 'nav_settings', icon: 'settings' },
 ] as const;
@@ -45,6 +48,15 @@ export function Shell({ children }: { children: ReactNode }) {
   const pending = review.data ? review.data.counts.suggestedLinks + review.data.counts.uncategorised + review.data.counts.candidates + review.data.counts.overdue : 0;
   const bad = health.data?.connections.some((c) => c.enabled && c.lastError && (!c.lastOkAt || (c.lastErrorAt ?? '') > c.lastOkAt));
   const location = useLocation();
+  const navigate = useNavigate();
+  // push alerts (push-alerts.md): a tapped notification opens its page (the alerts list, or a bank's code field)
+  useEffect(() => {
+    const check = () => void takeLaunchPath().then((p) => p && navigate(p));
+    check();
+    const onShow = () => document.visibilityState === 'visible' && check();
+    document.addEventListener('visibilitychange', onShow);
+    return () => document.removeEventListener('visibilitychange', onShow);
+  }, [navigate]);
   return (
     <div className="min-h-full md:flex">
       {/* phone: the chat is one tap away from every screen; the bottom bar is full */}

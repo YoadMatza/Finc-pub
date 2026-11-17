@@ -734,12 +734,26 @@ export interface Settings {
 }
 
 export type AlertType = 'sync_error' | 'stale_sync' | 'otp_needed' | 'missing_fixed' | 'big_purchase' | 'instalment_purchase' | 'card_bill_gap' | 'card_testing' | 'unusual_charge' | 'refund_matched' | 'over_target' | 'price_change' | 'candidate' | 'uncategorised' | 'weekly_summary' | 'spend_limit' | 'image_old';
+/** Where an alert went: the Telegram chat or the paired phone app (push). */
+export type AlertChannel = 'telegram' | 'push';
+/** POST /api/alerts/push-test: a test alert to every app device. */
+export interface PushTestResult {
+  ok: boolean;
+  devices: number;
+  error?: string;
+}
+/** GET /api/otp/pending: bank syncs waiting for a one-time code. */
+export interface OtpPending {
+  requests: Array<{ id: string; institutionId: string; expiresAt: string }>;
+}
 export interface AlertsPayload {
   /** amounts: whole shekels; money out from `big` is alerted, from `urgent` it goes out even in quiet hours */
-  config: { matrix: Record<AlertType, { telegram: boolean }>; quiet: { from: string; to: string } | null; weekly: { day: number; hour: number }; amounts: { big: number; urgent: number }; unusualFactor: number; telegramChatId: string | null };
+  config: { matrix: Record<AlertType, { telegram: boolean; push?: boolean }>; quiet: { from: string; to: string } | null; weekly: { day: number; hour: number }; amounts: { big: number; urgent: number }; unusualFactor: number; telegramChatId: string | null };
   telegram: { tokenInVault: boolean; tokenValid: boolean | null; bot: string | null; chatId: string | null; vaultLocked: boolean };
   quietNow: boolean;
-  recent: Array<{ id: number; type: string; key: string; channel: string; text: string; ok: boolean; error: string | null; sentAt: string }>;
+  recent: Array<{ id: number; type: string; key: string; channel: AlertChannel; text: string; ok: boolean; error: string | null; sentAt: string }>;
+  /** Push to the phone app (push-alerts.md): the Firebase key is in the unlocked vault; app devices registered for push. Absent from older workers. */
+  push?: { configured: boolean; devices: number };
   /** Alert settings and the chat binding change only from home (P0-02). Absent from older workers. */
   canEdit?: boolean;
 }

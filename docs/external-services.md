@@ -17,6 +17,7 @@ security alerts work while the vault is locked).
 | RiseUp API | No (history import only) | RiseUp personal access token | vault: `riseup` | your RiseUp subscription |
 | OpenAI **or** Anthropic **or** a local model | No (chat, AI categorisation, stock news summary) | API key, or none for a local model | vault: `ai_openai` / `ai_anthropic` | pay per use, cents a day |
 | Telegram Bot API | No, but recommended (alerts, one-time codes) | two bots from @BotFather | vault: `telegram`; `data/alarm-bot.json` | free |
+| Firebase Cloud Messaging (Google) | No (alerts on the phone app) | a free Firebase project; a service-account key | vault: `push_fcm` | free |
 | Yahoo Finance (public chart and search endpoints) | No (live prices, stock facts, company news when Finnhub has none) | none | — | free |
 | SEC EDGAR | No (company figures for US stocks) | none, a contact e-mail | `.env`: `FINC_SEC_CONTACT` | free |
 | Finnhub | No (analysts' ratings, earnings dates, company news) | free API key | vault: `finnhub` | free tier |
@@ -141,6 +142,15 @@ OpenAI's or Anthropic's servers over the internet at `https://<your host>:7443/m
 passkey (Settings → AI → Remote AI apps → Connect an app). finc contacts nothing for this except, for ChatGPT, one
 fixed address (`https://chatgpt.com/oauth/client.json`, ChatGPT's client description), at most once an hour while
 you connect it. Setup and limits: [docs/mcp.md](mcp.md#from-anywhere-chatgpt-and-claude).
+
+## Firebase Cloud Messaging (optional): alerts on the phone app
+
+| | |
+|---|---|
+| **For** | Waking the phone app when an alert is due. Setup: [docs/push.md](push.md). |
+| **Account / key** | A free Firebase project; its service-account key in the vault (`.\finc push setup <file>`), `google-services.json` in the app build (git-ignored). |
+| **Sent** | To Google: an OAuth token request signed with that key, and per phone a message with its push token and a random id. **Never** the alert's text, amount, merchant or kind: the app fetches those from finc. |
+| **Turn off** | Settings → Alerts: switch App off per type; removing the device ends its push. `.\finc vault rm push_fcm` removes the key. |
 
 ## Downloads when you build or update (not at run time)
 

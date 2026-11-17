@@ -10,6 +10,7 @@ import { useI18n } from './i18n';
 import { bootScreen, forgetSession, type BootScreen, type UnlockOutcome } from './lockflow';
 import { awayMs, clearWebCache, forgetPairing, hasLegacyServer, isNative, onAppState, uncover, vaultStatus, type PairedServer } from './native';
 import { Accounts } from './pages/Accounts';
+import { Alerts } from './pages/Alerts';
 import { Categories } from './pages/Categories';
 import { Trends } from './pages/Trends';
 import { Events } from './pages/Events';
@@ -232,6 +233,7 @@ function Authed({ onUnpair, onRevoked }: { onUnpair: () => void; onRevoked: () =
         <Route path="/trends" element={<Trends />} />
         <Route path="/events" element={<Events />} />
         <Route path="/chat" element={<Chat />} />
+        <Route path="/alerts" element={<Alerts />} />
         <Route path="/accounts" element={<Accounts />} />
         <Route path="/stock-rules" element={<StockRules />} />
         <Route path="/settings" element={<Settings onSignOut={signedOut} thisDevice={auth.data.device} />} />

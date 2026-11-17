@@ -1,6 +1,6 @@
 # Push alerts on the phone app
 
-Status: **proposal** (2026-11-17), not built. Decisions at the end.
+Status: **approved** 2026-11-17 with P1 FCM empty pings, P2 real text fetched from finc, P3 Telegram kept in parallel, P4 one-time codes in the app; being built.
 
 ## 1. What and why
 

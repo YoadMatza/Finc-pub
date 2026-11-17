@@ -16,11 +16,13 @@ import { listTransactions } from '../hub/transactions.js';
 import { DEFAULT_AMOUNTS, MONEY_SINCE_SETTING, type MoneyAlert, UNUSUAL, collectMoneyAlerts, moneySince } from './money.js';
 import { telegramSend } from './telegram.js';
 import { limitAlerts } from './limit.js';
+import { queuePush } from './push.js';
 import { errorPhrase, isErrorKind } from '../errors.js';
 
 export * from './money.js';
 export * from './telegram.js';
 export * from './limit.js';
+export * from './push.js';
 
 /**
  * `big_purchase` is the per-transaction "money out" alert since 2026-11-10 (alerts/money.ts); the type keeps
@@ -28,7 +30,7 @@ export * from './limit.js';
  */
 export const ALERT_TYPES = ['sync_error', 'stale_sync', 'otp_needed', 'missing_fixed', 'big_purchase', 'instalment_purchase', 'card_bill_gap', 'card_testing', 'unusual_charge', 'refund_matched', 'over_target', 'price_change', 'candidate', 'uncategorised', 'weekly_summary', 'spend_limit', 'image_old'] as const;
 export type AlertType = (typeof ALERT_TYPES)[number];
-export const CHANNELS = ['telegram'] as const;
+export const CHANNELS = ['telegram', 'push'] as const;
 export type Channel = (typeof CHANNELS)[number];
 
 export interface AlertConfig {
@@ -52,7 +54,8 @@ export function alertConfig(db: Db): AlertConfig {
   } catch {
     /* defaults */
   }
-  for (const t of ALERT_TYPES) matrix[t] = { telegram: saved[t]?.telegram ?? DEFAULT_ON.has(t) };
+  // push (the phone app, push-alerts.md) defaults to the same types as Telegram; it only sends once a device has push
+  for (const t of ALERT_TYPES) matrix[t] = { telegram: saved[t]?.telegram ?? DEFAULT_ON.has(t), push: saved[t]?.push ?? DEFAULT_ON.has(t) };
   let quiet: AlertConfig['quiet'] = { from: '23:00', to: '07:00' };
   const q = getSetting(db, 'alerts.quiet');
   if (q !== null) {
@@ -392,7 +395,17 @@ function logAlert(db: Db, a: Alert, channel: Channel, ok: boolean, error?: strin
  * Send what is due on Telegram: the current attention items, plus the weekly summary when its slot
  * has come and it was not sent this week. Respects the matrix and quiet hours; never sends a key twice.
  */
-export async function dispatchAlerts(db: Db, opts: { telegramToken: string | null; now?: Date; timeZone?: string; force?: boolean }): Promise<DispatchResult> {
+export async function dispatchAlerts(
+  db: Db,
+  opts: {
+    telegramToken: string | null;
+    now?: Date;
+    timeZone?: string;
+    force?: boolean;
+    /** the phone app's wake-up (push-alerts.md): called with the devices' tokens; the payload never carries an alert */
+    push?: { ping: (tokens: string[]) => Promise<{ ok: boolean; error?: string }> } | null;
+  },
+): Promise<DispatchResult> {
   const now = opts.now ?? new Date();
   const tz = opts.timeZone ?? 'Asia/Jerusalem';
   const cfg = alertConfig(db);
@@ -405,6 +418,36 @@ export async function dispatchAlerts(db: Db, opts: { telegramToken: string | nul
     alerts.push({ type: 'weekly_summary', key: w.key, text: w.text });
   }
   const quiet = !opts.force && inQuietHours(cfg.quiet, now, tz);
+  // the phone app first (push-alerts.md): queue what is due for every app device, then one empty wake-up each. The same
+  // matrix, quiet hours and flood summary as Telegram; a key goes out once per channel.
+  if (opts.push) {
+    const due = alerts.filter((a) => cfg.matrix[a.type]?.push && !alreadySent(db, a.key, 'push') && (!quiet || a.type === 'otp_needed' || a.urgent));
+    const money = due.filter((a) => a.money);
+    let items: Alert[] = due;
+    let summarised: Alert[] = [];
+    if (money.length > MONEY_FLOOD_LIMIT) {
+      const he = ((getSetting(db, 'ui.language') as 'he' | 'en' | null) ?? 'he') === 'he';
+      const summary: Alert = {
+        type: 'big_purchase',
+        key: `outbulk:${money.map((a) => a.key).sort().at(-1)}`,
+        text: he ? `💸 ${money.length} התראות כסף חדשות בבת אחת. פתח את finc ובדוק את התנועות האחרונות.` : `💸 ${money.length} new money alerts at once. Open finc and check the latest transactions.`,
+        urgent: money.some((a) => a.urgent),
+      };
+      summarised = money;
+      items = [...due.filter((a) => !a.money), summary];
+    }
+    if (items.length) {
+      const q = queuePush(db, items.map((a) => ({ type: a.type, key: a.key, text: a.text, urgent: a.urgent === true })), now);
+      if (q.devices) {
+        // queued is delivered: the app fetches its rows when it wakes or is next opened, so a failed wake-up is noted
+        // (the error) but not retried, which would queue the same alert twice
+        const r = await opts.push.ping(q.tokens);
+        for (const a of items) logAlert(db, a, 'push', true, r.ok ? undefined : r.error);
+        for (const a of summarised) logAlert(db, { ...a, text: `(in a summary of ${summarised.length}) ${a.text}` }, 'push', true);
+        for (const a of items) result.sent.push({ type: a.type, key: a.key });
+      }
+    }
+  }
   // flood guard: too many new money alerts at once become one summary; the rest are recorded as handled
   const dueMoney = alerts.filter((a) => a.money && cfg.matrix[a.type]?.telegram && !alreadySent(db, a.key, 'telegram'));
   if (dueMoney.length > MONEY_FLOOD_LIMIT && opts.telegramToken && cfg.telegramChatId) {

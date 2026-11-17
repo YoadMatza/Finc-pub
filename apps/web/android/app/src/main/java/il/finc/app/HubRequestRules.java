@@ -93,7 +93,8 @@ final class HubRequestRules {
     int q = p.indexOf('?');
     String path = (q < 0 ? p : p.substring(0, q)).toLowerCase(Locale.ROOT);
     while (path.endsWith("/")) path = path.substring(0, path.length() - 1);
-    return path.equals("/api/devices/pair");
+    // pairing and push registration answer with a secret (device token, push secret): only native code calls them
+    return path.equals("/api/devices/pair") || path.equals("/api/devices/me/push-token");
   }
 
   /**

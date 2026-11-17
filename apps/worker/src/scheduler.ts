@@ -4,7 +4,7 @@
  */
 import { type Db, INSTITUTIONS, SCRAPED_INSTITUTIONS, type Vault, finishRunError, refreshForecast, runEngine, setNextRun, startRun } from '@finc/core';
 import { Cron } from 'croner';
-import { runDispatch, securityAlert, startAlertTicker, telegramOtp } from './alerts.js';
+import { appOrTelegramOtp, runDispatch, securityAlert, startAlertTicker } from './alerts.js';
 import { type BackupDeps, BackupJob, BackupLockedError, type BackupOutcome } from './backup.js';
 import { pruneDebugFiles, pruneOldData } from './retention.js';
 import { sweepIdleDevices } from './lockdown.js';
@@ -352,7 +352,7 @@ export class Scheduler {
         continue;
       }
       try {
-        results.push(await this.deps.scrape(null, { institutionId, vault, monthsBack: monthsBack ?? this.config.monthsBack, showBrowser: false, dump, dryRun: true, trigger: 'manual', otp: telegramOtp(this.db, this.getVault), ...(explore ? { explore: true } : {}) }));
+        results.push(await this.deps.scrape(null, { institutionId, vault, monthsBack: monthsBack ?? this.config.monthsBack, showBrowser: false, dump, dryRun: true, trigger: 'manual', otp: appOrTelegramOtp(this.db, this.getVault), ...(explore ? { explore: true } : {}) }));
       } catch (e) {
         const msg = (e instanceof Error ? e.message : String(e)).slice(0, 500);
         log.error({ institution: institutionId, err: msg }, 'dry run crashed');
@@ -381,7 +381,7 @@ export class Scheduler {
       let before: number | null = null;
       try {
         before = this.lastRunId(institutionId);
-        results.push(await this.deps.scrape(this.db, { institutionId, vault, monthsBack: monthsBack ?? this.config.monthsBack, showBrowser: false, dump, trigger, otp: telegramOtp(this.db, this.getVault) }));
+        results.push(await this.deps.scrape(this.db, { institutionId, vault, monthsBack: monthsBack ?? this.config.monthsBack, showBrowser: false, dump, trigger, otp: appOrTelegramOtp(this.db, this.getVault) }));
       } catch (e) {
         const msg = (e instanceof Error ? e.message : String(e)).slice(0, 500);
         log.error({ institution: institutionId, err: msg }, 'sync crashed');

@@ -592,6 +592,78 @@ public class FincVaultPlugin extends Plugin {
     resolveOk(call, true, null);
   }
 
+  // ---------------------------------------------------------------- push alerts (push-alerts.md)
+
+  /**
+   * Registers this phone for push alerts (call after an unlock): asks for the notification permission (Android 13+),
+   * gets the Firebase token, sends it to the hub with the device token, and keeps the push secret the hub answers with
+   * in PushStore (its own Keystore key, no user authentication) for the background receiver. JS never sees the secret.
+   * Resolves {ok: true} or {ok: false, reason: 'locked' | 'no-firebase' | 'refused' | 'network'}.
+   */
+  @PluginMethod
+  public void pushRegister(PluginCall call) {
+    final Session s = session;
+    if (s == null) {
+      JSObject r = new JSObject();
+      r.put("ok", false);
+      r.put("reason", "locked");
+      call.resolve(r);
+      return;
+    }
+    if (android.os.Build.VERSION.SDK_INT >= 33 && getActivity() != null
+        && ContextCompat.checkSelfPermission(getContext(), android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      androidx.core.app.ActivityCompat.requestPermissions(getActivity(), new String[] {android.Manifest.permission.POST_NOTIFICATIONS}, 7301);
+    }
+    FincPushService.ensureChannel(getContext());
+    final com.google.firebase.messaging.FirebaseMessaging fm;
+    try {
+      fm = com.google.firebase.messaging.FirebaseMessaging.getInstance();
+    } catch (IllegalStateException e) {
+      // no google-services.json in this build: push is not set up
+      JSObject r = new JSObject();
+      r.put("ok", false);
+      r.put("reason", "no-firebase");
+      call.resolve(r);
+      return;
+    }
+    fm.getToken().addOnCompleteListener(task -> {
+      if (!task.isSuccessful() || task.getResult() == null) {
+        JSObject r = new JSObject();
+        r.put("ok", false);
+        r.put("reason", "network");
+        call.resolve(r);
+        return;
+      }
+      final String fcmToken = task.getResult();
+      execute(call, () -> {
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("authorization", "Bearer " + s.token);
+        headers.put("content-type", "application/json");
+        Answer a = send(s.origin + "/api/devices/me/push-token", "POST", headers, new JSONObject().put("token", fcmToken).toString());
+        String secret = a.status == 200 && a.data instanceof JSONObject ? ((JSONObject) a.data).optString("pushSecret", "") : "";
+        JSObject r = new JSObject();
+        if (!secret.startsWith("finc_push_")) {
+          r.put("ok", false);
+          r.put("reason", "refused");
+          call.resolve(r);
+          return;
+        }
+        PushStore.save(getContext(), s.origin, secret);
+        r.put("ok", true);
+        call.resolve(r);
+      });
+    });
+  }
+
+  /** The hub path a tapped notification asked for ("/alerts" or "/alerts?otp=…"), once; {path: null} otherwise. */
+  @PluginMethod
+  public void takeLaunchPath(PluginCall call) {
+    JSObject r = new JSObject();
+    String p = MainActivity.takeLaunchPath();
+    r.put("path", p == null ? JSObject.NULL : p);
+    call.resolve(r);
+  }
+
   /** Forget the pairing: the vault, the key, and the session. */
   @PluginMethod
   public void clear(PluginCall call) {
@@ -970,6 +1042,7 @@ public class FincVaultPlugin extends Plugin {
   /** Deletes the ciphertext and the key. Called only for clear(), permanent invalidation, or a definitely absent key. */
   private void wipe() {
     prefs().edit().remove(PREF_CT).remove(PREF_IV).commit();
+    PushStore.clear(getContext()); // forgetting the pairing ends push too
     try {
       KeyStore ks = KeyStore.getInstance(KEYSTORE);
       ks.load(null);

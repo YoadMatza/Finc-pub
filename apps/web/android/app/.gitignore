@@ -1,2 +1,5 @@
 /build/*
 !/build/.npmkeep
+
+# Firebase config for push alerts (push-alerts.md): per owner, never committed
+google-services.json

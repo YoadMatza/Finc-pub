@@ -48,3 +48,6 @@ Thumbs.db
 # --- the owner's working notes (finances, setup, security findings): never commit ---
 private/
 backups/
+
+# Firebase (push alerts): the owner's project files
+**/google-services.json

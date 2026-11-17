@@ -360,6 +360,10 @@ export const device = sqliteTable('device', {
   revokedAt: text('revoked_at'),
   /** why it was revoked: 'removed' (by hand), 'expired' (idle too long) or 'panic' (lock everything); null on old rows */
   revokedReason: text('revoked_reason'),
+  /** the phone app's push token (Firebase), for content-free wake-ups (research_notes/proposals/push-alerts.md) */
+  pushToken: text('push_token'),
+  /** SHA-256 of the device's push secret: lets the app's background receiver fetch its queued alerts, nothing else */
+  pushSecretHash: text('push_secret_hash'),
 });
 
 /**
@@ -680,4 +684,21 @@ export const oauthToken = sqliteTable('oauth_token', {
   createdAt: text('created_at').notNull(),
   expiresAt: text('expires_at').notNull(),
   usedAt: text('used_at'),
+});
+
+/**
+ * Alerts waiting for a phone app (push-alerts.md): the push itself carries nothing; the app fetches these rows over its
+ * pinned connection with its device token and shows them. Delivered rows are kept a week, then pruned.
+ */
+export const pushQueue = sqliteTable('push_queue', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  deviceId: integer('device_id').notNull(),
+  type: text('type').notNull(),
+  key: text('key').notNull(),
+  text: text('text').notNull(),
+  urgent: integer('urgent', { mode: 'boolean' }).notNull().default(false),
+  /** set for a one-time-code request: the app opens a code field for it */
+  otpId: text('otp_id'),
+  createdAt: text('created_at').notNull(),
+  deliveredAt: text('delivered_at'),
 });

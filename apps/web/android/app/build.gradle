@@ -149,6 +149,9 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     // FincVault (P1-11): BiometricPrompt + CryptoObject. 1.1.0 is the newest stable; same version the biometric-auth plugin uses.
     implementation "androidx.biometric:biometric:1.1.0"
+    // push alerts (push-alerts.md): Firebase Cloud Messaging for content-free wake-ups
+    implementation platform("com.google.firebase:firebase-bom:33.7.0")
+    implementation "com.google.firebase:firebase-messaging"
     implementation project(':capacitor-android')
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"

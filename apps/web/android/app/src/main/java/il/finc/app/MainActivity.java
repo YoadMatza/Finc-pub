@@ -1,5 +1,6 @@
 package il.finc.app;
 
+import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.view.View;
@@ -22,12 +23,33 @@ import com.getcapacitor.BridgeActivity;
  */
 public class MainActivity extends BridgeActivity {
   private static final int BG = Color.parseColor("#0F1115");
+  /** the hub path a tapped push notification asked for, handed to the web side once (push-alerts.md) */
+  private static String launchPath;
+
+  static synchronized String takeLaunchPath() {
+    String p = launchPath;
+    launchPath = null;
+    return p;
+  }
+
+  /** Only "/alerts" or "/alerts?otp=<id>": nothing else from an intent reaches the web side. */
+  private static synchronized void keepLaunchPath(Intent intent) {
+    String p = intent == null ? null : intent.getStringExtra(FincPushService.EXTRA_PATH);
+    if (p != null && p.matches("^/alerts(\\?otp=[A-Za-z0-9_-]{1,64})?$")) launchPath = p;
+  }
+
+  @Override
+  protected void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    keepLaunchPath(intent);
+  }
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
     getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
     registerPlugin(FincVaultPlugin.class);
     super.onCreate(savedInstanceState);
+    keepLaunchPath(getIntent());
     ViewGroup content = findViewById(android.R.id.content);
     View root = content.getChildCount() > 0 ? content.getChildAt(0) : content;
     root.setBackgroundColor(BG);

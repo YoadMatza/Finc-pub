@@ -95,6 +95,10 @@ interface FincVaultPlugin {
   pinnedHost(): Promise<{ host?: string; enforce?: boolean }>;
   /** an https://www.sec.gov/ link in the system browser (ACTION_VIEW); rejects with code 'invalid' | 'unavailable' */
   openExternal(o: { url: string }): Promise<{ ok: true }>;
+  /** push alerts (push-alerts.md): registers this phone after an unlock; the push secret stays in native code */
+  pushRegister(): Promise<{ ok: boolean; reason?: 'locked' | 'no-firebase' | 'refused' | 'network' }>;
+  /** the hub path a tapped notification asked for, once */
+  takeLaunchPath(): Promise<{ path: string | null }>;
 }
 
 let vaultPlugin: FincVaultPlugin | null = null;
@@ -320,7 +324,28 @@ export async function unlockServer(texts: UnlockTexts): Promise<UnlockResult> {
     return { reason: 'wrong-host' };
   }
   void removeLegacy(); // a copy left behind by an interrupted migration
+  void registerPush(); // push alerts: the phone (re)registers on every unlock; a build without Firebase just says so
   return { server };
+}
+
+/** Registers for push alerts (native does it all; a failure only means no push). */
+export async function registerPush(): Promise<boolean> {
+  try {
+    return (await vault().pushRegister()).ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The path a tapped push notification asked for ("/alerts" or "/alerts?otp=…"), once; null otherwise. */
+export async function takeLaunchPath(): Promise<string | null> {
+  if (!isNative) return null;
+  try {
+    const p = (await vault().takeLaunchPath()).path;
+    return typeof p === 'string' && /^\/alerts(\?otp=[A-Za-z0-9_-]{1,64})?$/.test(p) ? p : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Opens an SEC link in the phone's browser through the vault plugin (native checks the URL again). */

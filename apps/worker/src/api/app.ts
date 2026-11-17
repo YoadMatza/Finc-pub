@@ -37,6 +37,13 @@ import {
   MCP_PER_DAY,
   createMcpToken,
   CIMD_ALLOWED,
+  pushTargets,
+  deviceForPushSecret,
+  issuePushSecret,
+  queuePush,
+  setDevicePushToken,
+  takePendingPush,
+  validPushToken,
   CLIENT_ASSERTION_TYPE,
   CLIENT_JWKS,
   SeenJti,
@@ -201,6 +208,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type { DeviceView } from '@finc/core';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { type Context, Hono } from 'hono';
+import { pushSender, wakeApps } from '../alerts.js';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
@@ -221,6 +229,7 @@ import type { WorkerState } from '../server.js';
 import { ChatMemory } from './chat-memory.js';
 import { Attempts, BUSY, LockedFailures, OneAtATime, Pairings, PinGuard, type SessionEntry, Sessions, tokenMatches } from './auth.js';
 import { McpBridge } from '../mcp/bridge.js';
+import { otpBroker } from '../otp-broker.js';
 import { EnrolmentCodes, LoginChallenges, passkeyNameFromAgent, passkeyRp, passkeyUserId, realWebAuthn, type WebAuthnFns } from './passkeys.js';
 import { defaultWebDist, serveStatic } from './static.js';
 
@@ -532,7 +541,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     await next();
     c.res.headers.set('Cache-Control', 'no-store');
   };
-  for (const p of ['/api/*', '/mcp', '/mcp/*', '/oauth/*', '/.well-known/oauth-*', '/health', '/whoami', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
+  for (const p of ['/api/*', '/push/*', '/mcp', '/mcp/*', '/oauth/*', '/.well-known/oauth-*', '/health', '/whoami', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
   /**
    * Writes from another site are refused for everyone, signed in or not (review of P1-06/P1-07): a page on evil.example
    * can POST blind to http://127.0.0.1:7733/api/auth/login without rebinding (Host is then allowed) and lock the PIN.
@@ -1087,6 +1096,23 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     openPasskeySession(c, pk.id);
     log.info({ passkey: pk.id, client: clientAddress(c) }, 'ui: signed in with a passkey');
     securityAlert(state.db, state.vault, `signed in with a passkey: "${pk.name}"`, { kind: 'passkey.login_ok', actor: `passkey:${pk.id}`, actorName: pk.name, address: clientAddress(c), at: now() });
+    return c.json({ ok: true });
+  });
+
+  // --- push alerts, the phone's background receiver (push-alerts.md): a push secret (finc_push_…) fetches this device's
+  // queued alerts and updates its Firebase token; nothing else accepts it, and revoking the device ends it
+  const pushDevice = (c: Context): number | null => deviceForPushSecret(state.db, c.req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1]);
+  app.get('/push/pending', (c) => {
+    const id = pushDevice(c);
+    if (id === null) return c.json({ error: 'unknown push secret' }, 401);
+    return c.json({ items: takePendingPush(state.db, id, new Date(now())) });
+  });
+  app.post('/push/token', async (c) => {
+    const id = pushDevice(c);
+    if (id === null) return c.json({ error: 'unknown push secret' }, 401);
+    const body = z.object({ token: z.string().max(4096) }).strict().safeParse(await c.req.json().catch(() => null));
+    if (!body.success || !validPushToken(body.data.token)) return c.json({ error: 'not a push token' }, 400);
+    setDevicePushToken(state.db, id, body.data.token);
     return c.json({ ok: true });
   });
 
@@ -1920,6 +1946,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       telegram: { tokenInVault: !!state.vault && !state.vault.locked && state.vault.has('telegram'), tokenValid: me?.ok ?? null, bot: me?.username ?? null, chatId: cfg.telegramChatId, vaultLocked: !state.vault || state.vault.locked },
       quietNow: inQuietHours(cfg.quiet, new Date(), state.scheduler.config.timezone),
       recent: recentAlerts(state.db, 30),
+      // push alerts (push-alerts.md): set up = the Firebase key is in the open vault; devices = app devices with push
+      push: { configured: !!pushSender(state.vault), devices: pushTargets(state.db).length },
       // changing anything here is for the home network only (P0-02); the screen hides the controls elsewhere
       canEdit: trusted(c),
     });
@@ -1930,7 +1958,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     requireTrusted(c);
     const body = z
       .object({
-        matrix: z.record(z.string(), z.object({ telegram: z.boolean().optional() })).optional(),
+        matrix: z.record(z.string(), z.object({ telegram: z.boolean().optional(), push: z.boolean().optional() })).optional(),
         quiet: z.union([z.literal('off'), z.object({ from: z.string().regex(/^\d{2}:\d{2}$/), to: z.string().regex(/^\d{2}:\d{2}$/) })]).optional(),
         weekly: z.object({ day: z.number().int().min(0).max(6).optional(), hour: z.number().int().min(0).max(23).optional() }).optional(),
         // whole shekels: money out from `big` is alerted, from `urgent` it goes out even in quiet hours
@@ -2014,6 +2042,49 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   });
 
   // --- paired phones
+  // --- push alerts (research_notes/proposals/push-alerts.md)
+  /** The paired phone asking, or a 403: these routes belong to the app's own device token. */
+  const appDevice = (c: Context) => {
+    const d = authOf(c) === 'device' ? devicesSeen.get(c.req.raw) : undefined;
+    if (!d) throw new HTTPException(403, { message: 'for the paired phone app only' });
+    return d;
+  };
+  // the app registers (or clears) its Firebase token; a revoked device cannot have one
+  api.post('/devices/me/push-token', async (c) => {
+    const d = appDevice(c);
+    const body = z.object({ token: z.string().max(4096).nullable() }).strict().parse(await c.req.json().catch(() => ({})));
+    if (body.token !== null && !validPushToken(body.token)) return c.json({ error: 'not a push token' }, 400);
+    setDevicePushToken(state.db, d.id, body.token);
+    record(c, body.token ? 'push.registered' : 'push.unregistered', null, { aggregate: true });
+    // the background receiver cannot open the phone's vault (it needs the owner's fingerprint): it gets its own narrow
+    // secret, good only for this device's queued alerts and its push token (/push/*)
+    if (body.token === null) return c.json({ ok: true });
+    return c.json({ ok: true, pushSecret: issuePushSecret(state.db, d.id) });
+  });
+  // what the app shows after a wake-up: this device's queued alerts, handed out once
+  api.get('/alerts/pending', (c) => {
+    const d = appDevice(c);
+    return c.json({ items: takePendingPush(state.db, d.id, new Date(now())) });
+  });
+  api.post('/alerts/push-test', async (c) => {
+    requireTrusted(c);
+    const sender = pushSender(state.vault);
+    if (!sender) return c.json({ ok: false, devices: 0, error: 'push is not set up (Firebase key) or the vault is locked' });
+    const he = (getSetting(state.db, 'ui.language') ?? 'he') === 'he';
+    const q = queuePush(state.db, [{ type: 'test', key: `test:${now()}`, text: he ? '🔔 בדיקה מ-finc: התראות לטלפון עובדות.' : '🔔 Test from finc: phone alerts work.' }], new Date(now()));
+    if (!q.devices) return c.json({ ok: false, devices: 0, error: 'no app device has registered for push yet (open the phone app once)' });
+    const r = await wakeApps(state.db, sender, q.tokens);
+    return c.json({ ok: r.ok, devices: q.devices, ...(r.error ? { error: r.error } : {}) });
+  });
+  // one-time codes from the app or the hub (P4): a waiting bank sync gets the first answer, here or on Telegram
+  api.get('/otp/pending', (c) => c.json({ requests: otpBroker.pending().map((r) => ({ id: r.id, institutionId: r.institutionId, expiresAt: new Date(r.expiresAt).toISOString() })) }));
+  api.post('/otp/:id', async (c) => {
+    const body = z.object({ code: z.string().max(12) }).strict().safeParse(await c.req.json().catch(() => null));
+    if (!body.success || !/^\d{4,8}$/.test(body.data.code)) return c.json({ error: 'the code is 4 to 8 digits' }, 400);
+    if (!otpBroker.answer(c.req.param('id'), body.data.code)) return c.json({ error: 'no bank is waiting for this code any more' }, 404);
+    record(c, 'otp.answered', { via: authOf(c) });
+    return c.json({ ok: true });
+  });
   api.get('/devices', (c) => c.json({ devices: listDevices(state.db, c.req.query('all') === 'true'), pendingCodes: pairings.pending, publicUrl: publicUrl(c), trusted: trusted(c) }));
   api.post('/devices/pairings', async (c) => {
     requireTrusted(c);
