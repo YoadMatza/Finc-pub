@@ -179,8 +179,8 @@ export function alertText(i: Insight, lang: 'he' | 'en'): string | null {
       return he ? `🔁 קבועה חדשה? <b>${nm}</b> ${amt}` : `🔁 New recurring? <b>${nm}</b> ${amt}`;
     case 'image_old':
       return he
-        ? `🧰 תמונת ה-worker נבנתה לפני ${i.count} ימים (${i.date}). כדאי לבנות מחדש כדי ש-Chromium יקבל עדכוני אבטחה: docker compose build worker`
-        : `🧰 The worker image was built ${i.count} days ago (${i.date}). Rebuild it so Chromium gets security updates: docker compose build worker`;
+        ? `🧰 תמונת ה-worker נבנתה לפני ${i.count} ימים (${i.date}). כדאי לבנות מחדש כדי ש-Chromium ו-Node יקבלו עדכוני אבטחה: docker compose build worker scraper`
+        : `🧰 The worker image was built ${i.count} days ago (${i.date}). Rebuild both images so Chromium and Node get security updates: docker compose build worker scraper`;
     case 'uncategorised':
       return he ? `🏷️ ${i.count} תנועות צריכות קטגוריה` : `🏷️ ${i.count} transactions need a category`;
     case 'stale_sync': {

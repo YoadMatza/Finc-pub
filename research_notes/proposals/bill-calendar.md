@@ -1,7 +1,6 @@
 # Bill calendar (proposal, 2026-11-16)
 
-Idea from Monarch / Simplifi (the original plan's "extras"), chosen by the owner on 2026-11-16 (gaps plan D8). Nothing
-is built yet.
+Idea from Monarch / Simplifi (the original plan's "extras"), chosen by the owner on 2026-11-16 (gaps plan D8). **Built 2026-11-16** (`2b9f064`): Recurring → Calendar.
 
 ## What it is
 

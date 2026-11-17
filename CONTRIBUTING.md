@@ -53,8 +53,9 @@ Vite serves on :5173 and forwards `/api` to a worker on :7733 (`.\finc worker`, 
 | Path | What lives there |
 |---|---|
 | `packages/core` | Everything that does not touch the outside world: the schema and migrations (`drizzle/`), the vault, ingest and dedupe, the engine (merchants, instalments, settlements, refunds, categories, recurring), the hub's numbers, AI prompts and the egress guard. Pure and well tested. |
-| `apps/worker` | The `finc` CLI, the scheduler, the HTTP API (Hono), bank connectors, alerts, backups. |
-| `apps/web` | The React app (Vite, Tailwind), its translations (`src/i18n.tsx`), and the Android shell (`android/`, Capacitor). |
+| `apps/worker` | The `finc` CLI, the scheduler, the HTTP API (Hono), bank connectors (run in the scraper container, `scraper-main.ts`), alerts and push, the MCP servers (`mcp/`), backups. |
+| `apps/web` | The React app (Vite, Tailwind), its translations (`src/i18n.tsx`), and the Android shell (`android/`, Capacitor; push alerts need a `google-services.json` of your own, git-ignored). |
+| `deploy/` | Caddy, and the scraper container's seccomp profile (`deploy/scraper/`). |
 | `fixtures/` | Synthetic sample data. |
 | `design/` | Architecture and product design. Read `design/04-architecture.md` before changing the engine or the security model. |
 
@@ -71,19 +72,22 @@ These are not style preferences; a change that breaks one will not be merged.
    `Employer Ltd`, `0000`, `example.test`, `192.0.2.x`). If you derive a test from a real case, change every value.
 2. **Secrets only in the vault.** Never read a password, token or API key from an environment variable, a config file
    or the command line. Add a vault entry (`finc vault set <name>`) and read it from the unlocked vault.
-3. **Nothing leaves the machine except what is documented.** Today that is: merchant names, amounts and dates to the
-   user's chosen AI provider (through `modelName` / `guardEgress` in `packages/core/src/ai/model-names.ts`), ticker
-   symbols to Yahoo and Finnhub, a company's SEC number to SEC EDGAR, and alert text to Telegram. Never raw bank
-   descriptions, account numbers or error text. A new outgoing call needs a strong reason, a note in the README's
-   Privacy section, and a test that the guard holds.
+3. **Nothing leaves the machine except what is documented** (the full list: [docs/external-services.md](docs/external-services.md)).
+   Today that is: totals, categories, dates and card-purchase merchant names to the user's chosen AI provider and to
+   AI apps over MCP, always through `runPrivateTool` (the tool's allow-list in `packages/core/src/ai/egress.ts`, then
+   `guardEgress`); public headlines and market figures for a news summary; ticker symbols to Yahoo and Finnhub; a
+   company's SEC number to SEC EDGAR; alert text to Telegram; and an empty wake-up to Firebase for push. Never raw bank
+   descriptions, account numbers or error text. A new chat or MCP tool needs its shape in `TOOL_SHAPES` and canary
+   coverage in `egress.test.ts`; a new outgoing call needs a strong reason, a note in docs/external-services.md, and a
+   test that the guard holds.
 4. **Errors are cleaned before they are logged or sent.** Do not put raw scraper or provider error text into Telegram,
    the API's responses or the AI. Use the existing error kinds.
 5. **One writer.** Code must never open the live database from outside the worker while it runs. Commands go through
    the worker (`worker-client`), and the guards in `apps/worker/src/cli/guard.ts` must keep working.
 6. **No investment advice.** finc shows facts and the user's own rules. It never says buy, sell or hold, and never
    ranks holdings as good or bad.
-7. **Security-sensitive changes** (auth, pairing, passkeys, the vault, the egress guard, the Android token storage,
-   Caddy or Docker exposure) need a test for the attack they prevent, and a sentence in the pull request about what an
+7. **Security-sensitive changes** (auth, pairing, passkeys, the vault, the egress guard, MCP and its OAuth server,
+   push secrets, the scraper container and its socket, the Android token storage, Caddy or Docker exposure) need a test for the attack they prevent, and a sentence in the pull request about what an
    attacker could do before and after.
 
 ## Making a change
@@ -119,5 +123,5 @@ These are not style preferences; a change that breaks one will not be merged.
 ## Releasing (maintainers)
 
 The version is the same in every `package.json`; the Android app also has a `versionCode` in
-`apps/web/android/app/build.gradle`. Bump both together, rebuild the Docker image and the APK, and note the change in
-the README.
+`apps/web/android/app/build.gradle`. Bump both together, rebuild both Docker images (`docker compose build worker
+scraper`) and the APK, and note the change in CHANGELOG.md.

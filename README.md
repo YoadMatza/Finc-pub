@@ -4,17 +4,20 @@ Personal, single-user, self-hosted finance hub for Israeli bank and card account
 
 **New here?** Follow [docs/getting-started.md](docs/getting-started.md): build, configure, start, first sync and daily use, step by step.
 Every outside service, API and key finc can use, and what each one is sent: [docs/external-services.md](docs/external-services.md).
+Ask Claude or ChatGPT about your money (MCP, read-only, off by default): [docs/mcp.md](docs/mcp.md). Alerts on the phone app: [docs/push.md](docs/push.md).
 Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? See [SECURITY.md](SECURITY.md).
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `packages/core` | Schema, vault, dedupe/normalization, importers, RiseUp client. No I/O to banks. |
-| `apps/worker` | `finc` CLI, scheduler, bank connectors (israeli-bank-scrapers), control port. |
-| `apps/web` | The hub: Vite + React, Hebrew RTL / English, PWA. Built into `apps/web/dist` and served by the worker. |
+| `packages/core` | Schema, vault, dedupe/normalization, importers, RiseUp client, engine, alerts, the chat's lookups and their privacy path (`ai/egress.ts`). No I/O to banks. |
+| `apps/worker` | `finc` CLI, scheduler, hub API, control port, the MCP bridge (`finc mcp`), and the bank connectors (israeli-bank-scrapers), which run in the scraper container (`scraper-main.ts`). |
+| `apps/web` | The hub: Vite + React, Hebrew RTL / English, PWA. Built into `apps/web/dist` and served by the worker; `apps/web/android` is the phone app. |
+| `deploy/caddy` | Caddy with the DuckDNS module: the HTTPS entry for the phone and remote MCP. |
+| `deploy/scraper` | The scraper container's seccomp profile (`seccomp-chromium.json`), so Chromium runs with its own sandbox. |
 | `fixtures/` | Anonymized sample data for tests. **Never real data.** |
-| `data/` | Gitignored. SQLite DB, encrypted vault, browser profiles, imports. |
+| `data/` | Gitignored. SQLite DB, encrypted vault, imports, MCP tokens, the APK. (In Docker the bank browser profiles live in the scraper's own volume; `data/browser-profiles` is only for `finc spike` on the host.) |
 
 ## Dev on Windows
 
@@ -59,6 +62,8 @@ pnpm test
 | `.\finc worker` | Long-running scheduler + hub + API on 127.0.0.1:7733. |
 | `.\finc unlock` | Unlock the vault inside the running worker (needed after every worker start; the hub's Accounts screen can do it too). |
 | `.\finc ui pin [--clear]` | Set or reset the PIN that protects the hub. |
+| `.\finc mcp token create <app>` / `list` / `revoke <app>` | Tokens for AI apps on this PC; `.\finc mcp --token <app>` is the MCP server the app starts ([docs/mcp.md](docs/mcp.md)). |
+| `.\finc push setup <file>` | Store a Firebase service-account key (put the JSON in `data/` first) in the vault and delete the file ([docs/push.md](docs/push.md)). |
 
 ## The hub (Phase 4)
 
@@ -73,18 +78,24 @@ signs in with it. Sessions live in the worker's memory and die with it. The CLI 
 token the worker writes to `data/control.token`.
 
 Screens: **Now** (how the month will end, safe to spend, where the money went, attention, next 14 days, recent),
-**Transactions** (every §7b bucket is a filter; click a row for the full story and the decisions; the review inbox is a
-tab), **Recurring** (fixed expenses and income with this month's status, installments, candidates), **Categories**
+**Transactions** (every §7b bucket is a filter; click a row for the full story and the decisions; split one charge
+across up to eight categories, the parts adding up to the charge; the review inbox is a tab), **Recurring** (fixed
+expenses and income with this month's status, installments, candidates; a **Calendar** tab shows the month's bills,
+instalments, card bills and income by day with the bank balance line and its lowest point), **Categories**
 (targets, pace, six-month sparklines, top merchants), **Trends** (in / out / net bars over 12 or 24 months, one line per
 group and per notable category against its median, a Sankey of one finished month from income through groups to
-categories, and the last twelve months against the year before), **Net worth** (top of Trends: bank, foreign currency and securities balances minus what the cards have charged but not
+categories, and the last twelve months against the year before; **Year** is a printable year in review: in, out,
+saved, month by month, where it went against the year before, top merchants, fixed costs, big moments, net worth),
+**Alerts** (recent alerts, where a push notification opens; a code field when a bank sync waits for a one-time code), **Net worth** (top of Trends: bank, foreign currency and securities balances minus what the cards have charged but not
 yet taken, plus holdings entered by hand such as a pension or a loan with a value history; a line over time rebuilt from
 the recorded balances), **Events** (tag transactions from several months into
 "Trip to Rome" or "Car repair 2026" and see the cost with a breakdown; tag from the event's picker or from a transaction's
 sheet; the phone reaches it from the bottom of Trends), **Ask my money** (a chat; the model only ever chooses one of
-eight fixed local lookups — month summary, spend by category, top merchants, find transactions, recurring, trends,
-events, net worth — and finc runs it here; merchant names, amounts and dates go out, never account numbers or raw
-descriptions; every answer lists what was looked up; provider and model from Settings, the key from the vault entry
+ten fixed local lookups — spend summary, month summary, compare periods (a month against the same month last year or
+the usual), spend by category, top merchants, find transactions, recurring, trends, events, net worth — and finc runs
+it here; each result is cut to an allow-list of fields and scrubbed of anything that looks like an identifier
+(`packages/core/src/ai/egress.ts`, the same path the MCP server uses); merchant names, amounts and dates go out, never
+account numbers or raw descriptions; every answer lists what was looked up; provider and model from Settings, the key from the vault entry
 `ai_<provider>` only; reachable from the sidebar and the speech-bubble button on Now), **Accounts** (balances, card cycles, connections, unlock and sync
 from the browser; tap the FIBI securities or foreign-currency account for its positions: quantity, price, cost, change and value, with the account's value over time), **Settings** (language, model provider, rules, run the engine). Every number in the hub is the same
 number `finc month` prints.
@@ -106,8 +117,8 @@ from the internet the only key is a **paired-device token** that the Android app
 
 1. Router: forward TCP **7443** to this PC. Nothing else is opened; the certificate is obtained through DNS.
 2. `secrets\caddy.env` with one line, `DUCKDNS_TOKEN=…` (your DuckDNS token; finc never reads this file).
-3. `docker compose up -d --build` (see **Docker** below): the worker, Caddy with the DuckDNS module (certificate by
-   DNS-01, nothing on port 80) and the DuckDNS updater come up together and restart with Docker.
+3. `docker compose up -d --build` (see **Docker** below): the worker, the bank scraper, Caddy with the DuckDNS module
+   (certificate by DNS-01, nothing on port 80) and the DuckDNS updater come up together and restart with Docker.
 4. In the hub, Settings → Phone access → Public address: `https://finc-example.duckdns.org:7443`.
 
 **Pairing a phone:** Settings → Phone access → *Pair a phone* (from the home network) shows a QR code valid for 5 minutes,
@@ -172,8 +183,8 @@ Install over USB with `adb install -r app/build/outputs/apk/release/app-release.
 and open `https://finc-example.duckdns.org:7443/finc.apk` on the phone (Caddy serves that one file; no secrets inside). Not on the
 Play Store.
 
-**After a code change:** `docker compose up -d --build` rebuilds the worker image and restarts only what changed; then
-`.\finc unlock`. Nothing finc-related runs outside Docker on the host; the only host pieces are the `.\finc` CLI (unlock, spike, reports) and the Android build toolchain.
+**After a code change:** `docker compose up -d --build` rebuilds the worker and scraper images and restarts only what
+changed; then `.\finc unlock`. Nothing finc-related runs outside Docker on the host; the only host pieces are the `.\finc` CLI (unlock, spike, reports) and the Android build toolchain.
 
 After a PC restart the vault is locked until `.\finc unlock` (or *Unlock* on the Accounts screen, also from the app).
 
@@ -213,9 +224,16 @@ expense past its date, a refund matched, a group over its target, a price increa
 summary (Sunday 08:00 by default). Money leaving is checked per new transaction (since 2026-11-10): **any charge or
 transfer out of ₪1,000 or more** (card bills that match their card exactly and confirmed recurring charges excepted), a
 **new purchase in instalments** on its full amount, a **card bill that does not match** its card's charges, and **card
-testing** (four or more charges at one merchant on one card in one day). From ₪5,000, and for card testing, the message
+testing** (four or more charges at one merchant on one card in one day). An **unusual charge** (since 2026-11-16) is a
+charge more than 3 times a merchant's usual (the median of at least 4 earlier charges on the same account in the last
+year) and at least ₪200 above it. From ₪5,000, and for card testing, the message
 goes out even in quiet hours. Both amounts are in Settings → Alerts (home network only). Every type is a toggle; quiet
 hours default to 23:00–07:00. Nothing but merchant names, amounts and dates ever appears in a message.
+
+**Push to the phone app** (since 2026-11-17): every alert type has a Telegram and an App switch. Firebase carries only an
+empty wake-up; the app fetches the text from finc over its pinned connection with a per-device push secret, and a bank's
+one-time code can be typed in the app. Setup (a free Firebase project, `google-services.json` for the app build,
+`.\finc push setup`): [docs/push.md](docs/push.md).
 
 ### Security alerts and the alarm bot (since 2026-11-10)
 
@@ -290,8 +308,8 @@ locked, every page of the hub and the phone app shows a banner.
 Request bodies are capped at 256 KiB (the chat at 1 MiB, it sends the whole conversation), by Caddy and again by the
 worker (413; oversized streamed bodies are cut off, not read; each refusal lands in the security log as
 `http.body_too_large`). Caddy gives a client 10 s for its headers and 30 s for the whole request (no limit on
-downloads, so the APK still downloads on a slow line); the worker allows 15 s / 30 s. Memory caps: worker 2.5 GB
-(room for the scraper's Chromium), Caddy 256 MB, DuckDNS 32 MB.
+downloads, so the APK still downloads on a slow line); the worker allows 15 s / 30 s. Memory caps: worker 1.5 GB,
+scraper 1.5 GB (Chromium), Caddy 256 MB, DuckDNS 32 MB.
 
 ### Limits away from home (security research P2-02, since 2026-11-11)
 
@@ -313,6 +331,15 @@ details are in the worker log at home. Errors are cleaned before they are stored
 e-mails, card, ID, account or phone numbers), and the log hides secret-looking fields at any depth. The master
 password's bytes are wiped right after the vault opens (JavaScript cannot wipe the string itself). The vault does
 not lock itself on a timer, on purpose: the 06:00 sync needs it open; lock everything (P1-09) is the emergency lock.
+
+### Data retention (security research P2-10, since 2026-11-16)
+
+Every night at 03:20 the worker trims what it needed only for a while: raw bank payloads older than 24 months keep only
+the fields the engine reads (descriptions and memos go; the row stays so a charge is still recognised), the alert log
+keeps 12 months, what was sent to the AI for a merchant is cleared after 90 days (the answer stays), imported statement
+files in `data/imports` go 30 days after a successful import, and scraper dumps and failure screenshots after 14 days.
+Transactions, balances, the security log and backups are not touched; what was removed goes to the security log as
+counts.
 
 ### Live prices for stocks and dollars (since 2026-11-11, 0.7.8)
 
@@ -338,7 +365,7 @@ and a contact e-mail SEC requires, `FINC_SEC_CONTACT` in `.env`): revenue and ne
 growth, net margin now and 1 and 3 years ago, diluted EPS and P/E, cash, borrowings (excl. leases), finance leases,
 debt-to-equity (not for banks), shares and their 1-year change, each with its filing and period; recent filings
 (opened on www.sec.gov); the sector fund next to the S&P 500. Splits are adjusted, stale or inconsistent figures are
-left out with a note. Next steps (news, an AI summary of the facts): `research_notes/proposals/stock-insights.md`.
+left out with a note. Design: `research_notes/proposals/stock-insights.md`.
 
 ### Your own stock rules (since 2026-11-11, 0.8.1)
 
@@ -355,8 +382,16 @@ US-priced stock's panel shows the analysts' buy/hold/sell counts, the buy and se
 goes to Finnhub; the key travels only in a request header. When Finnhub answers under another symbol (a share class,
 another listing), finc accepts it only if Finnhub's company profile confirms it is the same company. If a refresh
 fails or the vault is locked, the last data (up to 30 days) shows with its date. Rules can watch the buy share's
-3-month change and an upcoming earnings report. Plan, including Telegram
-notices and analysts' ratings next: `research_notes/proposals/stock-decision-aids.md`.
+3-month change and an upcoming earnings report.
+
+News and the signals board (since 2026-11-16): the panel's **News** section lists the last 14 days' headlines from
+Finnhub (Yahoo Finance's public news search when Finnhub has none, for example foreign listings; only the ticker is
+sent) with a tone per headline, and an **AI summary** from the chat's provider (its own switch in Settings → AI; one
+call per stock per 12 hours). The model gets only public headlines and the panel's market facts, never quantities or
+amounts; code checks its answer before it is shown (every sentence cites a headline or fact, every number exists in the
+input, no advice words, no links), or shows no summary. The **Signals board** gives trend, against the market, company,
+analysts and news tone one documented reading each and says where they agree, never a score and never buy, sell or
+hold. On the phone app, news links open in the phone's browser. Design: `research_notes/proposals/stock-decision-aids.md`.
 
 Both incomes on the Now screen (0.8.3): the "left to spend" headline is unchanged (all income), and under it finc shows how much of it rests on regular income (salary, recurring) and how much on extra income (freelance, gifts, one-off transfers, cashback), what is received vs still expected, what is left without the extra, and the typical month (median of the last 6). "How is this calculated?" lists every term. Income kinds are set per category in Settings or per payment on its transaction. A large extra is kept out of the weekly amount unless you switch it on for that month.
 
@@ -366,17 +401,34 @@ Paid back to you (0.8.5): when someone repays you by Bit or a bank transfer, fin
 
 Spending limit alerts (0.8.6): with a limit set, Telegram tells you at 80% and at 100% of it (once each a month) and when day-to-day spending runs well ahead of an even spread (at most once a week). Turn it off under Settings → Alerts ("Monthly spending limit"); quiet hours apply.
 
-Chat quality check (0.8.9): `.\finc chat-eval` asks the configured model 27 fixed questions about a fictional household (no real data leaves the PC) and prints how many it answered, got right, asked about instead, or leaked. It costs a few cents per run and asks for the master password. `--model <id>` tries another model; `--only car-avg-he` runs one case.
+Chat quality check (0.8.9): `.\finc chat-eval` asks the configured model 28 fixed questions about a fictional household (no real data leaves the PC) and prints how many it answered, got right, asked about instead, or leaked. It costs a few cents per run and asks for the master password. `--model <id>` tries another model; `--only car-avg-he` runs one case.
 
 Chat model and follow-ups (0.8.13): Settings → AI has a "Chat model" choice, Fast or Better, separate from the model that categorises transactions (change it from the home network). Answers come with up to three suggested next questions as buttons, and Hebrew answers keep amounts, dates and English names in reading order.
 
+### AI apps over MCP (since 2026-11-17)
+
+The chat's ten lookups, read-only, for an AI app you already use. Off by default (Settings → AI, from home); every
+result goes through the same allow-list and identifier scrub as the chat, tested with planted canary identifiers; every
+call is in the security log without its values; 30 calls a minute and 1,000 a day per app; the panic button revokes
+everything. Details: [docs/mcp.md](docs/mcp.md).
+- **On this PC** (Claude Desktop, Claude Code): `.\finc mcp token create <app>`, then the app runs
+  `<finc folder>\finc.cmd mcp --token <app>` (stdio, inside the worker's container). The `/mcp/tools` and `/mcp/call`
+  routes it uses answer 404 through the public site.
+- **From anywhere** (ChatGPT, the Claude apps): Settings → AI → Remote AI apps, then **Connect an app** opens a
+  10-minute window for one connection; the app signs in through finc's own OAuth (`/oauth/*`, PKCE) and you approve
+  it with a passkey. Access tokens last an hour and work only on `/mcp`; refresh tokens last 30 days and rotate on every
+  use. ChatGPT only calls port 443: remote MCP can get its own address on 443 through another reverse proxy at home
+  (`mcpRemoteUrl`, see the doc).
+
 ## Docker (the deployment)
 
-Three long-running containers (plus a one-shot) from one compose file, the same on this PC and on a Raspberry Pi (arm64):
+Four long-running containers (plus a one-shot) from one compose file, the same on this PC and on a Raspberry Pi (arm64).
+The `Dockerfile` builds two images: `runtime` (the worker, no browser) and `scraper` (the same code with Debian Chromium).
 
 | Service | What | Ports |
 |---|---|---|
-| `worker` | hub + API + scheduler + bank connectors (Node 26, Debian Chromium) | 127.0.0.1:7733 (CLI and local browser) |
+| `worker` | hub + API + scheduler + vault + database + alerts (Node 26, no Chromium) | 127.0.0.1:7733 (CLI and local browser) |
+| `scraper` | the bank logins: Chromium and israeli-bank-scrapers, one job at a time over a Unix socket from the worker; no vault, no database, its own network, Chromium's sandbox on | — |
 | `caddy` | HTTPS for `finc-example.duckdns.org`, certificate via DuckDNS DNS-01, serves `data/apk/finc.apk` | 7443 (router forwards it) |
 | `duckdns` | keeps the DuckDNS name on this connection's public IP, every 5 minutes | — |
 | `caddy-perms` | runs once before Caddy and exits: gives Caddy's volumes and `data/logs/caddy` to its own user | — |
@@ -388,8 +440,19 @@ docker compose up -d --build
 docker compose logs -f worker
 ```
 
-Needs: Docker, `data/` (the vault, the DB, browser profiles; a bind mount so the CLI on the host sees the same files),
-`secrets/caddy.env` with `DUCKDNS_TOKEN=…` (outside `data/`, so the worker never sees it). Optional `.env`: `FINC_PUBLIC_HOST`, `FINC_PUBLIC_PORT`, `FINC_DUCKDNS_DOMAIN`, `TZ`.
+To rebuild both images: `docker compose build worker scraper`, then `docker compose up -d` and `.\finc unlock`. The hub
+and an alert remind you when the image is more than 35 days old, so Debian's Chromium keeps getting security updates.
+
+**The scraper container** (since 2026-11-17, `research_notes/proposals/scraper-container.md`): for each sync the worker
+sends one institution's login fields over `/run/finc-scraper/scraper.sock`, a volume only these two containers mount;
+the scraper logs in, returns the raw rows and forgets the fields. A bank's one-time-code request comes back over the
+same socket. It sees only the bank browser profiles (a Docker volume), `data/screenshots` and the socket; no port, not
+on the `edge` network. Chromium runs with its own sandbox, allowed by a seccomp profile
+(`deploy/scraper/seccomp-chromium.json`: Docker's default plus clone/unshare/chroot, no capabilities);
+`FINC_CHROMIUM_SANDBOX=0` in `.env` falls back to `--no-sandbox`.
+
+Needs: Docker, `data/` (the vault, the DB; a bind mount so the CLI on the host sees the same files),
+`secrets/caddy.env` with `DUCKDNS_TOKEN=…` (outside `data/`, so the worker never sees it). `.env` must set `FINC_PUBLIC_HOST` and `FINC_DUCKDNS_DOMAIN` (compose refuses to start without them); optional: `FINC_PUBLIC_PORT`, `TZ`, `FINC_CHROMIUM_SANDBOX`.
 The worker trusts `X-Forwarded-*` only from Caddy's fixed address on the `edge` network (`FINC_TRUSTED_PROXIES`); the
 PIN still works only from trusted client addresses, never from the internet. It answers only to `localhost`,
 `127.0.0.1`, `FINC_PUBLIC_HOST`, the configured public URL and `FINC_ALLOWED_HOSTS` (anything else: 421, against DNS
@@ -409,19 +472,20 @@ Since P1-13 the code enforces it too:
   fool it;
 - a command run on the PC with the worker stopped claims the file itself, so a worker starting meanwhile waits
   (up to 75 s) instead of sharing it;
-- `finc sync --dump/--dry-run` go through the running worker (it owns the bank browser profiles);
+- `finc sync --dump/--dry-run` go through the running worker (and from it to the scraper);
 - `--show-browser` and `spike` are refused while it runs.
 
 No code can stop other tools: never open `data/finc.db` with DB Browser, sqlite3.exe or an editor extension while the
 worker runs.
 
 **Headful bank logins** (FIBI's stubborn login button, Isracard's bot wall) need a screen, so `.\finc spike <bank>` runs on
-the host with the host's Node against the same `data/`; it writes nothing to the DB. It shares the worker's browser
-profiles, so stop the worker first (`docker compose stop worker`); finc refuses it otherwise.
+the host with the host's Node (and the Chromium `pnpm install` downloaded) against the same `data/`; it writes nothing
+to the DB. It opens the vault, so stop the worker first (`docker compose stop worker`); finc refuses it otherwise. It
+uses its own browser profiles in `data/browser-profiles`, not the scraper container's.
 
 **Moving to the Raspberry Pi:** install Docker, copy the repository, the whole `data/` folder (vault, DB,
 `apk/`) and `secrets/caddy.env`, forward the router port to the Pi instead of the PC, run `docker compose up -d --build` (the first build compiles
-Caddy and installs Chromium for arm64, allow 10–20 minutes), then `./finc.sh unlock`. Docker starts at boot there, so finc is
+Caddy and installs Chromium for arm64 in the scraper image, allow 10–20 minutes), then `./finc.sh unlock`. Docker starts at boot there, so finc is
 up without anyone logging in; only the vault unlock remains manual, by design.
 
 Schedule: `FINC_SYNC_TIMES` (default `06:00,18:00`, Asia/Jerusalem) with up to `FINC_SYNC_JITTER_MIN` (30) minutes of jitter.
@@ -498,4 +562,4 @@ To restore from the NAS, copy a `.fincbak` file back to the backup folder (for e
 
 - Credentials and API keys: encrypted vault only (`data/vault.json`, Argon2id + XChaCha20-Poly1305). Never in git, logs or `.env`. Environment variables are never read for secrets; every `*_API_KEY` / `*_TOKEN` / `*_PASSWORD`-style variable is deleted from the process at startup so other projects' keys on this machine can never be used.
 - Raw bank data stays in `data/` (gitignored). `fixtures/` holds synthetic samples only.
-- Nothing is sent to any outside service except what [docs/external-services.md](docs/external-services.md) lists: your login to your own banks, and, only if you turn them on, merchant names, amounts and dates to your chosen AI provider, alert text to Telegram, ticker symbols to Yahoo and Finnhub, a company's SEC number to SEC EDGAR, the RiseUp token for the import, and backup files to your own NAS. The hub binds to 127.0.0.1 and is protected by a PIN; fonts and scripts are self-hosted, so opening it contacts nothing outside.
+- Nothing is sent to any outside service except what [docs/external-services.md](docs/external-services.md) lists: your login to your own banks, and, only if you turn them on, merchant names, amounts and dates to your chosen AI provider (and, for a stock's news summary, public headlines and market facts), the chat's lookup results to an AI app you connect over MCP, alert text to Telegram, an empty wake-up to Firebase for the phone app, ticker symbols to Yahoo and Finnhub, a company's SEC number to SEC EDGAR, the RiseUp token for the import, and backup files to your own NAS. The hub binds to 127.0.0.1 and is protected by a PIN; fonts and scripts are self-hosted, so opening it contacts nothing outside.

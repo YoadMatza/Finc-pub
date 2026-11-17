@@ -1,7 +1,7 @@
 # Yearly report (proposal, 2026-11-16)
 
 Idea from Lunch Money / YNAB (the original plan's "extras"), chosen by the owner on 2026-11-16 (gaps plan D8).
-Nothing is built yet.
+**Built 2026-11-16** (`0b7305e`): Trends → Year.
 
 ## What it is
 

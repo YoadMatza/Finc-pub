@@ -1,7 +1,6 @@
 # Unusual-charge alert (proposal, 2026-11-16)
 
-Idea from Snoop / Copilot (the original plan's "extras"), chosen by the owner on 2026-11-16 (gaps plan D8). Nothing is
-built yet.
+Idea from Snoop / Copilot (the original plan's "extras"), chosen by the owner on 2026-11-16 (gaps plan D8). **Built 2026-11-16** (`07a8ee7`).
 
 ## What it is
 

@@ -37,6 +37,8 @@
                 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
+This was the first sketch. The deployment as built (four containers, the public entry, MCP and push) is in §11–§14.
+
 ## 3. Suggested stack
 
 | Layer | Choice | Why |
@@ -47,7 +49,7 @@
 | DB | **SQLite** (Drizzle ORM). Can move to Postgres later. | Single user, one file, trivial backup. |
 | Frontend | **Next.js or Vite + React**, Tailwind, shadcn/ui, Recharts/ECharts, **RTL Hebrew first** | Web hub on desktop plus an installable PWA on the phone. |
 | Remote access | Tailscale or LAN; **from 2026-11-09 also a public HTTPS entry** at `finc-example.duckdns.org` (Caddy, Let's Encrypt via DuckDNS DNS-01) that accepts paired-device tokens only — see §10 | The owner wants the Android app to work anywhere without Tailscale on the phone; the PIN is never accepted from the internet. |
-| Packaging | Docker Compose: `app` + `worker` | Easy to run on the PC, a NAS, or a mini-PC. |
+| Packaging | Docker Compose. **As built:** `worker` (hub + API + scheduler + vault + DB), `scraper` (Chromium, bank logins), `caddy`, `duckdns` — see §11 | Easy to run on the PC, a NAS, or a mini-PC. |
 | Secrets | Encrypted vault (libsodium) keyed by a master password, or Windows DPAPI | No plaintext credentials. |
 | Optional AI | Claude API for the categorisation fallback and "ask my money" chat | Opt-in; only merchant and amount data is sent. |
 
@@ -253,6 +255,11 @@ RiseUp showed the same Streamly charge twice: the actual ₪57 under *variable* 
     - a sync error, once per outage;
     - no successful sync for 36 hours.
   - The Telegram chat is bound by a one-time code made at home, and alert settings change from home only.
+- **Amended 2026-11-16/17.**
+  - Unusual charge (`alerts/money.ts`): more than 3× the merchant's median on the same account over the last year (at
+    least 4 earlier charges) and at least ₪200 above it.
+  - The channels are **Telegram** and **push** to the Android app (not Web Push); the toggle matrix is per alert type ×
+    {telegram, push}. Push is content-free, see §14.
 
 ## 7e. Internationalisation
 
@@ -303,7 +310,12 @@ unlinked income within 0.7–1.4× the expected amount, so a salary outside the 
   - restore on the host only, with the worker container stopped: staged swap with rollback; money alerts re-based
     after the first sync.
 - Logs never contain credentials or full card numbers.
-- The LLM is opt-in. It receives only `merchant, amount, date`; never names, ID numbers or account numbers.
+- The LLM is opt-in. It receives only `merchant, amount, date`; never names, ID numbers or account numbers. Since
+  2026-11-17 the same rule covers AI apps over MCP; both go through one egress path (§12).
+- **Data retention (security research P2-10, 2026-11-16, `db/retention.ts`):** nightly at 03:20, raw bank payloads
+  older than 24 months are slimmed to the fields the engine reads, the alert log keeps 12 months, `ai_suggestion`'s
+  sent payload is cleared after 90 days, imported statement files go 30 days after a successful import, scraper dumps
+  and failure screenshots after 14 days. Transactions, balances, the security log and backups are untouched.
 
 ## 10. Remote access and the Android app (added 2026-11-09)
 
@@ -357,13 +369,139 @@ background (BiometricPrompt), and later the push channel for Phase 5 alerts. The
 sends the Bearer token instead of relying on cookies. Built with Gradle into a sideloaded APK signed with a local
 keystore (gitignored, backed up with the vault); no Play Store.
 
-**Operations.** Docker Compose runs three containers: the worker, Caddy (built with the DuckDNS module, HTTPS on the
-public port, also serves the APK) and a DuckDNS updater; the worker trusts `X-Forwarded-*` only from compose-network
-peers. The same file runs on the PC and on a Raspberry Pi, where Docker starts at boot. The vault still needs
+**Operations.** Docker Compose runs the worker, Caddy (built with the DuckDNS module, HTTPS on the
+public port, also serves the APK) and a DuckDNS updater container (which replaced the scheduled task above), and since
+2026-11-17 a fourth, the bank scraper (§11); the worker trusts `X-Forwarded-*` only from Caddy's fixed address on the
+`edge` network (P1-07). The same file runs on the PC and on a Raspberry Pi, where Docker starts at boot. The vault still needs
 `finc unlock` after a restart; the app can do that from the Accounts screen over HTTPS with the master password, which
-is never stored on the phone. Headful bank logins run from the CLI on a machine with a screen, against the same data/.
+is never stored on the phone. Headful bank logins (`finc spike`) run from the CLI on a machine with a screen, with the
+host's own Chromium, against the same data/ and with the worker stopped.
 (A Windows-logon-task deployment was tried on 2026-11-09 and retired: it needed a Windows account password to start
 before login, which the owner rightly refused for this project.)
 
 **What stays true.** No financial data reaches any third party: DuckDNS sees only the home IP address and Let's Encrypt
 only the hostname. Bank credentials never leave the vault.
+
+## 11. Containers and how they talk (as built, 2026-11-17)
+
+```
+ internet ── the router forwards TCP 7443 only
+     │
+     ▼
+ caddy       (edge network, fixed address) HTTPS for the public name; stamps X-Finc-Edge: public;
+     │       404 on the PIN, control and local-MCP paths
+     │ HTTP worker:7733
+     ▼
+ worker      (edge network) hub + API + scheduler + vault + SQLite + alerts + MCP + OAuth; no Chromium
+     │       ◄── 127.0.0.1:7733: the CLI and the PC's browser
+     │ Unix socket /run/finc-scraper/scraper.sock (volume scraper_socket, mounted by these two only)
+     ▼
+ scraper     (own network, no port) Chromium + israeli-bank-scrapers, sandboxed ──► bank sites
+
+ duckdns     (own network) ──► DuckDNS every 5 minutes; reaches nothing of finc's
+```
+
+| Service | Image (Dockerfile target) | Holds | Network | Notes |
+|---|---|---|---|---|
+| `worker` | `runtime` | DB, vault (unlocked in memory), alerts, scheduler | `edge` | read-only root, no capabilities, 127.0.0.1:7733 published for the CLI |
+| `scraper` | `scraper` (same code + Debian Chromium) | bank browser profiles (volume `browser_profiles`), `data/screenshots`, the socket | `scraper` (internet only) | no vault, no DB, no port; Chromium sandbox on |
+| `caddy` | `deploy/caddy` | its certificate and key (volume `caddy_data`) | `edge` | the only public listener; reads `secrets/caddy.env` |
+| `duckdns` | curl, pinned by digest | the DuckDNS token | `duckdns` | cannot reach the worker |
+
+`caddy-perms` is a one-shot that hands Caddy's volumes to its unprivileged user and exits.
+
+**A sync** (`connectors/scraper-socket.ts`, design `research_notes/proposals/scraper-container.md`): the worker opens
+the socket and sends one newline-delimited JSON job, protocol v1: the institution, months back, and that institution's
+login fields read from the vault. The scraper runs the existing `runScrape` with no database, may answer `otp_needed`
+(the worker relays the code from the CLI, Telegram or the app, and sends it back on the same connection), then returns
+the raw result or an error, and forgets the fields. The worker ingests as before. One job per connection, messages
+size-capped, a 20-minute job timeout. The socket lives on a volume only these two containers mount, so nothing about a
+sync is on a network. Without `FINC_SCRAPER_SOCKET` (a host run, `finc spike`, `--show-browser`) the browser runs in
+the CLI's own process.
+
+**Scraper isolation.** It never sees the vault or the database, only one institution's fields for one job. It is on
+its own network (not `edge`), has no published port, a read-only root, no capabilities, `no-new-privileges`, and a
+seccomp profile (`deploy/scraper/seccomp-chromium.json`: Docker's default plus `clone`/`unshare`/`chroot`) that lets
+Chromium start its own namespace sandbox without `SYS_ADMIN`. `FINC_CHROMIUM_SANDBOX=0` falls back to `--no-sandbox`.
+A Chromium escape lands in a container with no finc data beyond the browser profiles.
+
+**Image age.** Both images record their build day (`/etc/finc-image-built`); after 35 days the hub and an alert ask for
+`docker compose build worker scraper`, so Debian's Chromium keeps getting security fixes.
+
+## 12. One egress path for the chat and MCP (2026-11-16/17)
+
+Everything a model can see goes through `runPrivateTool` (`packages/core/src/ai/chat.ts`): the tool runs locally, its
+result is projected onto the tool's allow-list (`TOOL_SHAPES` in `ai/egress.ts`; an unlisted key or a wrong type is
+dropped, and tests require nothing to be dropped from a normal result), then every string passes `guardEgress` /
+`scrubIdentifiers` (numbers that look like card, account, ID or phone numbers, emails, IBANs). An unknown tool or an
+error becomes a short `{error}`, never the exception text. Canary tests plant made-up identifiers wherever a bank can
+put them and fail if one comes out.
+
+The ten tools (spend summary, month summary, `compare_periods`, spend by category, top merchants, find transactions,
+recurring, trends, events, net worth) serve three callers through that one function:
+
+- the hub's chat ("Ask my money"), with the provider from Settings and its key from the vault;
+- **local MCP**: `finc mcp --token <app>` (stdio, started by the AI app on the PC, run inside the worker container by
+  the launcher) holds no database; it calls the worker's `GET /mcp/tools` and `POST /mcp/call` on 127.0.0.1 with the
+  app's token (made by `finc mcp token create`, kept in `data/mcp/<app>.token`, stored as a hash). Caddy answers 404
+  on `/mcp/*`;
+- **remote MCP** (§13) on `POST /mcp`.
+
+Off by default; 30 calls a minute and 1,000 a day per app; every call is a `mcp.call` security event with the tool and
+argument names, never values or results.
+
+## 13. Remote MCP: finc as a one-owner OAuth server (2026-11-17)
+
+ChatGPT and the Claude apps call MCP servers from their own servers, so finc answers MCP over Streamable HTTP on the
+public entry and is its own small authorization server (`packages/core/src/hub/oauth.ts`, routes in
+`apps/worker/src/api/app.ts`; design `research_notes/proposals/remote-mcp.md`). All of it answers 404 while Settings →
+AI → Remote AI apps is off.
+
+| Endpoint | Role |
+|---|---|
+| `GET /.well-known/oauth-protected-resource[/mcp]` | resource metadata pointing at the issuer |
+| `GET /.well-known/oauth-authorization-server` | issuer metadata (PKCE S256, `none` or `private_key_jwt`) |
+| `POST /oauth/register` | Dynamic Client Registration (Claude), only inside an open connection window |
+| `GET /oauth/authorize` | checks client and callback, then redirects to the hub's `/connect` approval page |
+| `/api/oauth/requests/:id` (+ `/options`, `/approve`) | the approval page's API: a fresh passkey signature approves |
+| `POST /oauth/token` | code and refresh exchange; a `private_key_jwt` assertion is verified when sent, and required for a grant made with one |
+| `POST /mcp` | the tools (§12) with a bearer access token; other methods refused, any `Origin` refused |
+
+- **Who can connect:** ChatGPT (by its client metadata document, the one allow-listed URL finc fetches, plus its JWKS)
+  and Claude (by registration); every redirect URI must be that app's own callback.
+- **When:** the owner opens a 10-minute window at home (Settings → **Connect an app**); authorize works only inside it,
+  at most three requests per window, and an approval is refused when a window holds two.
+- **Tokens:** codes single-use for 60 seconds, bound to client, redirect, PKCE challenge and resource; access tokens 1
+  hour, scope `finc.read`, valid only on `/mcp`; refresh tokens 30 days, rotated on every use, and a reused one
+  revokes the grant (with an alert). Only SHA-256 hashes are stored. The vault, device tokens, passkeys, PIN, the
+  control token and local MCP tokens never work on `/mcp`.
+- **Where it sits:** the issuer is the hub's public address, or `mcp.remote.publicUrl` when set: ChatGPT only calls
+  port 443, so remote MCP can have its own address on 443 behind another reverse proxy at home that forwards only
+  `/mcp`, `/oauth/register|token|authorize` and the two `/.well-known/oauth-*` documents to finc's Caddy (TLS again).
+  The approval page stays on the hub's address, where the passkeys are bound.
+- **Off switch:** turning it off revokes every connection; the panic button also clears codes and requests; Settings
+  revokes one app.
+
+## 14. Push alerts to the Android app (2026-11-17)
+
+Design `research_notes/proposals/push-alerts.md`, setup `docs/push.md`.
+
+```
+alert due ─► dispatchAlerts (matrix[type].push) ─► queued per device (DB) ─► FCM v1 send: data = random id only
+phone (FincPushService) wakes ─► GET /push/pending  (Bearer finc_push_…, pinned TLS) ─► notification text
+```
+
+- **Queue + empty ping.** `queuePush` stores the alert text per paired device that has a push token; the worker then
+  asks Firebase Cloud Messaging (service-account key in the vault entry `push_fcm`, set by `finc push setup`) to
+  deliver a message carrying only a random id. A test checks every field Firebase receives. Google learns that an
+  alert happened and when, nothing else.
+- **`/push/*` with the push secret.** The app's background receiver cannot wait for the fingerprint the device token
+  needs, so each device gets a narrow secret (`finc_push_…`, hashed in the DB, kept on the phone under a Keystore key
+  of its own) that works only on `GET /push/pending` (take this device's queued alerts) and `POST /push/token` (update
+  its FCM token). It is replaced at every registration (`POST /api/devices/me/push-token` with the device token);
+  revoking the device or the panic button ends it. The open app reads the same queue with its device token
+  (`GET /api/alerts/pending`).
+- **The app** shows private-on-lock-screen notifications; a tap opens the hub's Alerts page, where a bank's one-time
+  code can be typed (the waiting sync takes the first answer, the app's or Telegram's). The build needs
+  `apps/web/android/app/google-services.json` (git-ignored) from versionCode 35.
+- Channels per alert type: Telegram and push, with the same quiet hours and flood summary.

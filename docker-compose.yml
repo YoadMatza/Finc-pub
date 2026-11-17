@@ -1,5 +1,6 @@
-# finc, the whole deployment: the worker (hub + API + scheduler + bank connectors), Caddy (HTTPS on the
-# public port, certificate via DuckDNS) and a tiny DuckDNS updater. Same file on the PC and on a Raspberry Pi.
+# finc, the whole deployment: the worker (hub + API + scheduler + vault + database), the scraper (Chromium for the
+# bank logins, in its own container), Caddy (HTTPS on the public port, certificate via DuckDNS) and a tiny DuckDNS
+# updater. Same file on the PC and on a Raspberry Pi.
 #
 #   docker compose up -d --build       # first time and after code changes
 #   (needs FINC_PUBLIC_HOST and FINC_DUCKDNS_DOMAIN in .env, see .env.example)

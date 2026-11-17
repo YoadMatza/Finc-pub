@@ -1,7 +1,6 @@
 # Split one transaction across categories (proposal, 2026-11-16)
 
-Idea from YNAB / Actual (the original plan's "extras"), chosen by the owner on 2026-11-16 (gaps plan D8). Nothing is
-built yet.
+Idea from YNAB / Actual (the original plan's "extras"), chosen by the owner on 2026-11-16 (gaps plan D8). **Built 2026-11-16** (`20558bf`): split from a transaction's sheet.
 
 ## What it is
 

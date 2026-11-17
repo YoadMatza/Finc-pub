@@ -11,8 +11,28 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
   request templates, CI (build, typecheck, test) and Dependabot.
 - MIT license.
 - `docs/external-services.md`: every outside service, API and key, with what each one is sent.
+- Chat: `compare_periods`, what changed in a month against the same month last year or the usual.
+- Alerts: an unusual-charge alert (a charge far above that merchant's usual); push alerts on the phone app next to
+  Telegram (Firebase carries an empty wake-up, the app fetches the text from finc), with an App switch per alert type,
+  a test push, an Alerts page, and one-time codes typed in the app (`docs/push.md`, `finc push setup`).
+- Recurring → Calendar: the month's fixed money by day. Trends → Year: a printable yearly report.
+- Split one transaction across categories (spending only).
+- Stocks: the signals board (decision aids part E) and company news with an AI summary checked by code before it is
+  shown (part C; Finnhub, with Yahoo Finance as the fallback for foreign listings). News links open in the phone's
+  browser.
+- MCP: a read-only MCP server for AI apps on the PC (`finc mcp`, tokens with `finc mcp token create|list|revoke`), and
+  remote MCP for ChatGPT and the Claude apps through finc's own OAuth server with passkey approval (`docs/mcp.md`). Both
+  off by default.
+- Nightly data retention (old run logs, security events, caches pruned at set ages).
+- A reminder to rebuild the images after 35 days, so Chromium keeps getting security updates.
 
 ### Changed
+- Bank logins run in a separate `scraper` container (Chromium with its own sandbox, a seccomp profile in
+  `deploy/scraper/`, no vault, no database, its own network); the worker image has no Chromium. Build both:
+  `docker compose build worker scraper`. `FINC_CHROMIUM_SANDBOX=0` falls back to `--no-sandbox`.
+- The chat's lookups and the MCP tools share one privacy path: an allow-list of fields per tool, then a scrub of
+  identifiers (separated card and account numbers, IBANs, phones, emails, the accounts' own ids), with canary tests.
+- The worker image's root filesystem is read-only; the DuckDNS token moved to `secrets/caddy.env`.
 - `docker-compose.yml` puts backups in `./backups` unless `FINC_BACKUP_HOST_DIR` is set.
 - Dependencies: TypeScript 7, better-sqlite3 13 (ships its own binaries, so no C++ build tools are needed any more),
   react-router 8, @hono/node-server 2, and minor updates of hono, @inquirer/prompts and @simplewebauthn/server.

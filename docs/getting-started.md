@@ -31,9 +31,11 @@ Supported sources today:
 | JDK 21 + Android SDK | — | only to build the Android app |
 | A [DuckDNS](https://www.duckdns.org) name + a router you can forward a port on | — | only for access from outside home |
 | Telegram | — | only for alerts |
-| An OpenAI or Anthropic API key, or a local model | — | only for the chat and AI categorisation |
+| A free [Firebase](https://console.firebase.google.com) project | — | only for alerts on the phone app (push) |
+| An OpenAI or Anthropic API key, or a local model | — | only for the chat, AI categorisation and stock news summaries |
 
-Every outside service finc can use (banks, AI, Telegram, price and filing sources, DuckDNS, a NAS), with the account
+Every outside service finc can use (banks, AI, Telegram, Firebase, price, news and filing sources, DuckDNS, a NAS,
+AI apps over MCP), with the account
 or key each one needs and exactly what it is sent, is listed in [external-services.md](external-services.md).
 
 Install pnpm (once). The repo pins its exact version in `package.json`; any 10.x works to start, and this one
@@ -69,7 +71,8 @@ pnpm -r build
 pnpm test
 ```
 
-- `pnpm install` also downloads the Chromium that Puppeteer uses for bank logins on this machine.
+- `pnpm install` also downloads the Chromium that Puppeteer uses for bank logins on this machine (setup A and
+  `finc spike`; under Docker the logins run in the scraper container's own Chromium).
 - `pnpm -r build` builds `packages/core` first; the worker and the web app import its built output, so tests and
   typecheck fail until it has run once. Run it again after every code change.
 - All tests should pass. They use synthetic data only.
@@ -155,8 +158,10 @@ password).
 
 ## 5. Start finc
 
-Pick **one** of the three ways. Docker (B or C) is recommended: it restarts on its own and keeps Chromium and Node
-versions fixed.
+Pick **one** of the three ways. Docker (B or C) is recommended: it restarts on its own, keeps Chromium and Node
+versions fixed, and runs the bank logins in a container of their own (the **scraper**: Chromium with its sandbox on, no
+vault, no database, no way to the hub). The worker hands it one bank's login for one sync at a time over a private
+socket.
 
 ### A. Directly on the machine (quickest to try)
 
@@ -173,8 +178,8 @@ The worker runs in that window (stop it with Ctrl+C) and serves the hub on http:
 ### B. Docker, home only
 
 Docker needs a file for Caddy's DuckDNS token even when Caddy does not run. In `.env` set
-`FINC_PUBLIC_HOST=localhost` and `FINC_DUCKDNS_DOMAIN=none`, then create an empty `secrets\caddy.env` and start only the
-worker:
+`FINC_PUBLIC_HOST=localhost` and `FINC_DUCKDNS_DOMAIN=none`, then create an empty `secrets\caddy.env` and start the
+worker (Compose starts the scraper with it):
 
 ```bash
 mkdir data, secrets
@@ -194,7 +199,9 @@ docker compose up -d --build worker
 .\finc unlock
 ```
 
-The first build takes several minutes (it installs Chromium into the image).
+The first build takes several minutes: it builds two images, the worker (no browser) and the scraper (with Debian's
+Chromium). If a bank sync fails because Chromium cannot start its sandbox on your Docker, set
+`FINC_CHROMIUM_SANDBOX=0` in `.env` and run `docker compose up -d scraper` (it then runs without the sandbox).
 
 ### C. Docker with access from outside home (phone, other computers)
 
@@ -202,7 +209,7 @@ The first build takes several minutes (it installs Chromium into the image).
 2. Create `secrets\caddy.env` with one line, `DUCKDNS_TOKEN=<your DuckDNS token>`. finc itself never reads this file.
 3. On your router, forward TCP **7443** to this computer. Nothing else is opened: the certificate comes from Let's
    Encrypt through DNS, port 80 stays closed.
-4. Start all three containers (worker, Caddy, DuckDNS updater):
+4. Start all four containers (worker, scraper, Caddy, DuckDNS updater):
 
 ```bash
 docker compose up -d --build
@@ -274,7 +281,8 @@ Check the result:
 
 Some bank logins need a visible browser (a stubborn login button, a bot check). Run a one-off **spike** with a
 window on this computer; it writes nothing to the database, only a raw dump and a data-shape report in `data\dumps\`.
-It shares the worker's browser profile, so stop the Docker worker first:
+It runs with this computer's Node and Chromium, not in the scraper container, and opens the vault itself, so stop the
+Docker worker first (finc refuses otherwise):
 
 ```bash
 docker compose stop worker
@@ -327,12 +335,13 @@ same file is safe: duplicates are recognised.
 | Screen | What it shows |
 |---|---|
 | **Now** | How the month is expected to end, what is left to spend, the regular vs extra income behind it, the monthly spending limit, items that need attention, the next 14 days, recent transactions. "How is this calculated?" lists every term. |
-| **Transactions** | Every transaction with filters (section, account, status, dates, text). Tap a row for the full story: the original text, instalments, a linked refund, the category and why. The **review** tab is the inbox. |
-| **Recurring** | Fixed expenses, subscriptions and fixed income with this month's status, instalment plans, and candidates to confirm. |
+| **Transactions** | Every transaction with filters (section, account, status, dates, text). Tap a row for the full story: the original text, instalments, a linked refund, the category and why; **Split** spreads one charge over several categories. The **review** tab is the inbox. |
+| **Recurring** | Fixed expenses, subscriptions and fixed income with this month's status, instalment plans, and candidates to confirm. The **Calendar** tab shows the month by day: bills, instalments, card bills and income, with the bank balance line and its lowest point. |
 | **Categories** | Each category's target, pace, six-month trend and top merchants. |
-| **Trends** | In / out / net over 12 or 24 months, groups against their median, where one month's money went (Sankey), this year against last year, and **Net worth** at the top. |
+| **Trends** | In / out / net over 12 or 24 months, groups against their median, where one month's money went (Sankey), this year against last year, and **Net worth** at the top. **Year** is a printable year in review (print it to PDF from the browser). |
 | **Events** | Tag transactions from several months ("Trip to Rome", "Car repair") and see the total cost. |
 | **Ask my money** | A chat about your money (section 8, "Chat"). |
+| **Alerts** | Recent alerts (a push notification opens here) and a code field when a bank sync waits for a one-time code. |
 | **Accounts** | Balances, card cycles, each connection's health, **Unlock** and **Sync**. Tap a securities or foreign-currency account for its positions with live prices. |
 | **Settings** | Language, PIN, phone access and passkeys, alerts, AI, income kinds, the spending limit, your stock rules, limits away from home, the security log. |
 
@@ -374,7 +383,8 @@ Choose a provider and store its key in the vault:
 model on your own machine). Then Settings → AI → **Chat model**: Fast or Better.
 
 What leaves your machine: merchant names, amounts and dates only — never account numbers, card numbers or raw bank
-descriptions. The model can only pick one of a few fixed local lookups; finc computes the answer here, and every answer
+descriptions. The model can only pick one of ten fixed local lookups (a month's summary, what changed against last
+year or the usual, spending by category, top merchants, and so on); finc computes the answer here, and every answer
 lists what it looked at.
 
 AI categorisation of the merchants the rules could not place:
@@ -393,6 +403,19 @@ To check the chat's quality on a fictional household (no real data is sent; cost
 .\finc chat-eval
 ```
 
+### Ask Claude or ChatGPT instead (optional)
+
+The same ten lookups, read-only, can answer an AI app you already use. It is off by default and turned on from home
+(Settings → AI). On this PC (Claude Desktop, Claude Code), make a token for the app, then add finc to the app as the
+doc shows:
+
+```bash
+.\finc mcp token create claude-code
+```
+
+From anywhere (ChatGPT, the Claude apps), setup C is needed: Settings → AI → Remote AI apps → **Connect an app**, then
+approve the app with a passkey. Every step, what the apps get and never get, and how to revoke: [mcp.md](mcp.md).
+
 ### Telegram alerts (recommended)
 
 1. In Telegram, talk to **@BotFather**, send `/newbot` and copy the token.
@@ -402,8 +425,9 @@ To check the chat's quality on a fictional household (no real data is sent; cost
 
 You then get: a failed sync, a bank that has not synced for 36 hours, a bank asking for a one-time code (reply with the
 code), a fixed expense past its date, refunds, a group over its target, price increases, large charges or transfers
-(₪1,000+ by default), new instalment purchases, card bills that do not match, card testing, spending-limit alerts, and
-a Sunday summary. Every type is a toggle; quiet hours default to 23:00–07:00.
+(₪1,000+ by default), a charge far above a merchant's usual, new instalment purchases, card bills that do not match,
+card testing, spending-limit alerts, and a Sunday summary. Every type is a toggle; quiet hours default to 23:00–07:00.
+The same alerts can also go to the phone app (section 9, "Alerts on the phone").
 
 **The alarm bot.** Security alerts (wrong PINs, pairings, sign-ins, "worker started, vault locked") must arrive even
 while the vault is locked, so they go through a second, send-only bot whose token is kept outside the vault. Create a
@@ -422,8 +446,11 @@ second bot in @BotFather, press Start in it, then (vault unlocked):
 Securities accounts show live prices from Yahoo Finance (only ticker symbols leave your machine). Tap a holding for
 facts: price history and averages, returns against the S&P 500, volatility, dividends; with `FINC_SEC_CONTACT` set, the
 company's own figures from its SEC filings; with a free [Finnhub](https://finnhub.io) key
-(`.\finc vault set finnhub`), analysts' ratings and earnings dates. finc never says buy, sell or hold. Instead,
-Settings → **My stock rules** lets you set your own conditions and shows which apply.
+(`.\finc vault set finnhub`), analysts' ratings, earnings dates and recent news (Yahoo's news is the fallback, for
+example for foreign listings), with an AI summary of the headlines when a chat provider is set (its own switch in
+Settings → AI; code checks it before it is shown). A **signals board** shows where trend, market, company, analysts and
+news agree. finc never says buy, sell or hold. Instead, Settings → **My stock rules** lets you set your own conditions
+and shows which apply.
 
 ### Useful commands
 
@@ -439,6 +466,8 @@ Settings → **My stock rules** lets you set your own conditions and shows which
 | `.\finc enable <bank>` / `disable <bank>` | Include or leave out a bank in the scheduled syncs |
 | `.\finc events` | The security log |
 | `.\finc panic` | Lock everything (section 10) |
+| `.\finc mcp token list` / `revoke <app>` | AI apps on this PC and their last use; cut one off |
+| `.\finc push setup <file>` | Store the Firebase key for phone alerts (section 9) |
 
 ---
 
@@ -476,7 +505,9 @@ fincPins=<live pin>,<backup pin>
 A release build refuses to run without `fincPublicHost` and two valid pins. Keep the keystore and its passwords
 backed up yourself: they are not in finc's backups.
 
-**3. Build** (JDK 21 and the Android SDK; set `JAVA_HOME` and `ANDROID_HOME`):
+**3. Build** (JDK 21 and the Android SDK; set `JAVA_HOME` and `ANDROID_HOME`). For alerts on the phone, put your
+Firebase project's `google-services.json` in `apps/web/android/app/` first (git-ignored; see "Alerts on the phone"
+below):
 
 ```bash
 pnpm --filter @finc/web build
@@ -498,6 +529,26 @@ The signed APK is in `apps/web/android/app/build/outputs/apk/release/`.
 **5. Pair.** At home: Settings → Phone access → **Pair a phone** shows a QR code (valid 5 minutes, once). In the app,
 choose **Scan QR**. The phone appears under Paired devices, where **Revoke** cuts it off at once. A phone that has not
 connected for 30 days is removed automatically.
+
+### Alerts on the phone (optional)
+
+The app can show finc's alerts as notifications, next to Telegram (Settings → Alerts has a Telegram and an App switch
+per alert type), and a bank's one-time code can be typed in the app. Google's Firebase carries only an empty wake-up; the app fetches the text from your
+hub. Once:
+
+1. Create a free Firebase project, add an Android app with the package name `il.finc.app`, and put its
+   `google-services.json` in `apps/web/android/app/`. Build and install the app again (steps 3 and 4).
+2. In the Firebase console, make a service-account key (Project settings → Service accounts), put the JSON file in
+   `data\`, and store it in the vault (the file is deleted afterwards):
+
+```bash
+.\finc push setup <file-name>.json
+```
+
+3. Lock and unlock the vault so the worker reads the key, open the app and unlock it once (allow notifications), then
+   Settings → Alerts → **Send a test push**.
+
+Details and what keeps it private: [push.md](push.md).
 
 ### Another computer: passkeys
 
@@ -586,7 +637,23 @@ docker compose up -d --build
 .\finc unlock
 ```
 
-The database schema migrates itself on start. Rebuild and reinstall the Android app when the web app changed.
+`--build` rebuilds both images (the worker and the scraper). The database schema migrates itself on start. Rebuild and
+reinstall the Android app when the web app changed.
+
+**Rebuild the images regularly.** Even without a code change, rebuild about once a month so the scraper's Chromium
+(Debian's) gets its security updates; the hub and an alert remind you after 35 days:
+
+```bash
+docker compose build worker scraper
+```
+
+```bash
+docker compose up -d
+```
+
+```bash
+.\finc unlock
+```
 
 ---
 
@@ -603,6 +670,8 @@ The database schema migrates itself on start. Rebuild and reinstall the Android 
 | A bank keeps failing to log in | Check the password with `.\finc vault check`, then try a visible login with `.\finc spike <bank>` (section 7). |
 | The phone app stopped connecting and Telegram says the TLS key changed | Caddy's key changed (its volume was reset). Follow "If the alarm says the key changed" in the README; the backup pin exists for this. |
 | A command is refused because "the worker owns the database" | The one-writer rule (section 5): let `.\finc` run it through the worker, or stop the worker first. |
+| Every bank sync fails right away under Docker, the scraper's log (`docker compose logs scraper`) shows Chromium failing to start | Chromium's sandbox may not start on this Docker: set `FINC_CHROMIUM_SANDBOX=0` in `.env`, then `docker compose up -d scraper`. |
+| The hub says the image is more than 35 days old | `docker compose build worker scraper`, `docker compose up -d`, `.\finc unlock` (section 11). |
 | Chrome marks the site "Dangerous" | A known Safe Browsing false positive for DuckDNS names; passkeys work again once the warning is dismissed. |
 
 ---
@@ -619,7 +688,7 @@ It works like the Windows launchers: while the worker container runs, commands r
 exec`); `spike` and `FINC_HOST=1 ./finc.sh …` run on the host, which needs Node and `pnpm -r build`; `backup restore`
 refuses while the worker runs. Use `cp .env.example .env`, `mkdir -p data secrets` and `touch secrets/caddy.env`
 instead of the Windows commands above. On a Raspberry Pi the first build compiles Caddy and installs Chromium for
-arm64; allow 10–20 minutes. Docker starts at boot there, so only the vault unlock is manual.
+arm64 in the scraper image; allow 10–20 minutes. Docker starts at boot there, so only the vault unlock is manual.
 
 To move an existing installation, copy the repository, the whole `data/` folder (vault, database,
 `apk/`) and `secrets/caddy.env`, point the router's port forward at the new machine, run `docker compose up -d --build` and unlock.

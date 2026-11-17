@@ -1,7 +1,7 @@
 # Stock insights: design (2026-11-11)
 
 Tap a holding → a panel that explains how the company and the stock are doing, from facts, so the owner can decide.
-finc never says buy, sell or hold. This note is the design; nothing is built yet.
+finc never says buy, sell or hold. This note is the design; it is built (the stock panel in the hub), with decision aids C and E on top (stock-decision-aids.md).
 
 ## 1. Principles
 

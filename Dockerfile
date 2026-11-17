@@ -63,7 +63,8 @@ CMD ["node", "--disable-sigusr1", "apps/worker/dist/scraper-main.js"]
 FROM app AS runtime
 ENV FINC_DATA_DIR=/data FINC_PORT=7733
 RUN mkdir -p /data && chown node:node /data
-# the day this image was built: the worker reminds the owner to rebuild after 35 days, so Debian's Chromium (which
+# the day this image was built: the worker reminds the owner to rebuild both images after 35 days, so Node and the
+# scraper's Debian Chromium (which
 # opens the bank sites) keeps getting security updates (security research P2-03)
 RUN date -u +%Y-%m-%d > /etc/finc-image-built
 USER node

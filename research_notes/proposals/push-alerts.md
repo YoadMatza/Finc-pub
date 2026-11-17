@@ -1,6 +1,6 @@
 # Push alerts on the phone app
 
-Status: **approved** 2026-11-17 with P1 FCM empty pings, P2 real text fetched from finc, P3 Telegram kept in parallel, P4 one-time codes in the app. **Built and live 2026-11-17** (`3b47ef2`, app vc35 `ae5ade2`): Firebase project `finc-deb3f` (Spark, free; Analytics and Gemini off); the phone registered, a test push reached it and was fetched 6 seconds later. One change from §2: the background receiver uses a per-device push secret (the vault's key needs a fingerprint, which a notification cannot wait for).
+Status: **approved** 2026-11-17 with P1 FCM empty pings, P2 real text fetched from finc, P3 Telegram kept in parallel, P4 one-time codes in the app. **Built and live 2026-11-17** (`3b47ef2`, app vc35 `ae5ade2`): a Firebase project on the free Spark plan (Analytics and Gemini off); the phone registered, a test push reached it and was fetched 6 seconds later. One change from §2: the background receiver uses a per-device push secret (the vault's key needs a fingerprint, which a notification cannot wait for).
 
 ## 1. What and why
 
@@ -20,7 +20,7 @@ summary (core alerts/index.ts `dispatchAlerts`, its `matrix[type]`).
 
 ```
 finc worker ──(1) "wake up" (no content)──▶ push service ──▶ the phone
-the phone app ──(2) GET /api/alerts/pending (device token, pinned TLS)──▶ finc ──▶ text, shown as a notification
+the phone app ──(2) GET /push/pending (push secret, pinned TLS)──▶ finc ──▶ text, shown as a notification
 ```
 
 - **The push message carries nothing**: no amount, no merchant, no kind, only "finc has something for you" and a random
@@ -63,7 +63,7 @@ Raspberry Pi move if you want no Google in the loop.
 | # | Step | Done when |
 |---|---|---|
 | 1 | **You:** create a free Firebase project, add the Android app (`il.finc.app`), download `google-services.json`, create a service-account key; `.\finc vault set push_fcm` | the files exist; nothing committed |
-| 2 | **Core:** `push` column in the alert matrix, a delivery queue per device, `/api/alerts/pending` + `/api/alerts/:id/seen`, push tokens on device rows (migration) | unit tests: queue, per-device delivery, revoke drops the token |
+| 2 | **Core:** `push` column in the alert matrix, a delivery queue per device, `/push/pending` (push secret) and `/api/alerts/pending` (device token), push tokens and push-secret hashes on device rows (migration) | unit tests: queue, per-device delivery, revoke drops the token |
 | 3 | **Worker:** FCM HTTP v1 sender (OAuth from the service-account key, data-only message, empty payload), wired into `dispatchAlerts`; OTP provider reads app answers too | tests with a fake FCM: payload has no content, quiet hours, flood summary |
 | 4 | **App:** push plugin, a native `FirebaseMessagingService` that fetches pending alerts with the device token and posts notifications; Android 13+ notification permission; tap opens the alert / OTP field. New APK (vc35) | on the phone: an alert arrives with its text, app closed |
 | 5 | **Hub:** Alerts screen (history, mark seen), Settings → Alerts gets a Push column per type, a "send a test push" button | web tests; seen on the phone |
