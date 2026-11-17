@@ -8,7 +8,7 @@ import { isNative, openExternalNative } from '../native';
 import { INSIGHTS_STALE_MS, RETURN_KEYS, absPct, axisNum, betaReading, buildChart, crossCheckNote, diffTone, drawdownView, insightsReady, lastYear, nearestIndex, ptsText, trendReadings, unavailableReason, type ChartBox } from '../insights';
 import { gainTone, pctText, stamp, toneClass } from '../live';
 import { groupResults, jerusalemDay, lastKnownText, noneApplyText, nowText, restSummary, ruleSentence, sinceDay, sourceText } from '../holdingRules';
-import { citeMarks, factKey, headlineAnchor, headlineNumber, headlinesUnavailableKey, newsLink, summaryUnavailableKey, toneDot, type CiteMark } from '../insightsNews';
+import { citeMarks, factKey, headlineAnchor, headlineNumber, headlinesSourceKey, headlinesUnavailableKey, newsLink, summaryUnavailableKey, toneDot, type CiteMark } from '../insightsNews';
 import { RATING_LABEL, analystsParts, changeText, monthYear, ratingColor, sharePct } from '../insightsAnalysts';
 import type { BoardSignal, HoldingInsights, HoldingNews, NewsHeadline, HoldingRuleResult, SignalsBoard, HoldingView, InsightCompanyNote, InsightFigure, InsightFiling, InsightPoint, LiveHoldingRow } from '../types';
 import { FILINGS_VISIBLE, TREND_ARROW, basisCaption, companyUnavailableReason, compactNumber, figureCurrency, filingText, isolateLtr, latestSecDate, marginTrend, noteText, openSecLink, periodLabel, placeNotes, ratioText, secLink, type MarginTrend } from '../insightsCompany';
@@ -795,6 +795,7 @@ function NewsSection({ id }: { id: number }) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
   const n = q.data;
+  const via = n ? headlinesSourceKey(n) : null;
   const ids = useMemo(() => new Set((n?.headlines ?? []).map((h) => h.id)), [n]);
   const jump = (hid: string) => {
     if (!n) return;
@@ -844,7 +845,10 @@ function NewsSection({ id }: { id: number }) {
             ) : (
               <p className="text-xs text-muted">{t(headlinesUnavailableKey(n.headlinesUnavailableCode))}</p>
             )}
-            <span className="text-[10px] text-muted/80">{t(n.stale ? 'news_stale' : 'news_fetched', { t: stamp(n.fetchedAt) })}</span>
+            <span className="text-[10px] text-muted/80">
+              {t(n.stale ? 'news_stale' : 'news_fetched', { t: stamp(n.fetchedAt) })}
+              {via && ` · ${t(via)}`}
+            </span>
           </>
         )
       )}

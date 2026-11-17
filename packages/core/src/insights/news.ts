@@ -1,6 +1,6 @@
 /**
  * Stock decision aids Part C (research_notes/proposals/stock-decision-aids.md): a held stock's recent news and an AI
- * summary of it. This module is pure: the Finnhub company-news answer, the headlines finc keeps, the request to the
+ * summary of it. This module is pure: the Finnhub company-news answer (and Yahoo's search news, the fallback), the headlines finc keeps, the request to the
  * owner's AI provider, and the code that checks the model's answer before anything is shown.
  *
  * Headlines are untrusted third-party text (they can carry instructions aimed at a model): they reach the model as
@@ -85,6 +85,43 @@ export function parseCompanyNews(body: unknown, onFail?: (check: string) => void
       continue;
     }
     out.push({ title, source, url, at: sec * 1000, summary: clean(o.summary, SUMMARY_MAX) });
+  }
+  return out;
+}
+
+/** Yahoo Finance's public search endpoint, news only (the fallback when Finnhub has no headlines): only the ticker is sent. */
+export const yahooNewsPath = (sym: string): string => `/v1/finance/search?q=${encodeURIComponent(sym)}&quotesCount=0&newsCount=${NEWS_MAX}&enableFuzzyQuery=false`;
+
+/**
+ * Yahoo's search answer: `{ news: [{ title, publisher, link, providerPublishTime (seconds), relatedTickers? }] }`.
+ * The same rules as parseCompanyNews (plain text, https links, real times, sizes capped, anything malformed skipped);
+ * an item whose `relatedTickers` (when present) does not name `symbol` is skipped, so a match on another company is not
+ * shown. An answer without a `news` array is refused (null). Yahoo gives no summary line.
+ */
+export function parseYahooNews(body: unknown, symbol: string, onFail?: (check: string) => void): NewsRow[] | null {
+  const news = body && typeof body === 'object' && !Array.isArray(body) ? (body as { news?: unknown }).news : undefined;
+  if (!Array.isArray(news)) {
+    onFail?.('no_news_array');
+    return null;
+  }
+  const want = symbol.trim().toUpperCase();
+  const out: NewsRow[] = [];
+  for (const raw of news.slice(0, MAX_ROWS)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const o = raw as Record<string, unknown>;
+    const related = o.relatedTickers;
+    if (related !== undefined && (!Array.isArray(related) || !related.some((x) => typeof x === 'string' && x.trim().toUpperCase() === want))) continue;
+    const title = clean(o.title, TITLE_MAX);
+    const source = clean(o.publisher, SOURCE_MAX) ?? 'unknown';
+    const url = typeof o.link === 'string' ? o.link.trim() : '';
+    const sec = typeof o.providerPublishTime === 'number' && Number.isFinite(o.providerPublishTime) ? o.providerPublishTime : NaN;
+    if (!title || !/^https:\/\/[^\s<>"']{4,2000}$/.test(url) || !(sec > 1e9 && sec < 1e10)) continue;
+    try {
+      new URL(url);
+    } catch {
+      continue;
+    }
+    out.push({ title, source, url, at: sec * 1000, summary: null });
   }
   return out;
 }

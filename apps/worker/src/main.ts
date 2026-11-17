@@ -10,6 +10,7 @@ import { workerUp } from './cli/worker-client.js';
 import { log } from './logger.js';
 import { HoldingRulesService } from './holding-rules.js';
 import { FinnhubService, finnhubKeyFromVault } from './finnhub.js';
+import { YahooNewsService } from './yahoo-news.js';
 import { InsightsService } from './insights.js';
 import { SecService, secContactFromEnv } from './sec.js';
 import { PriceService, livePricesEnabled } from './prices.js';
@@ -163,6 +164,8 @@ if (livePricesEnabled()) {
   // the panel's analysts and earnings dates from Finnhub (stock-decision-aids.md, Part B): the key is read from the
   // vault at each fetch (finc vault set finnhub); while it is locked the last cached view shows. See finnhub.ts.
   live.finnhub = new FinnhubService({ db: liveDb, key: () => finnhubKeyFromVault(live.vault) });
+  // company news from Yahoo (no key) when Finnhub has none for a stock, e.g. foreign listings. See yahoo-news.ts.
+  live.yahooNews = new YahooNewsService({ db: liveDb });
 }
 // The owner's holding rules (stock-decision-aids.md, Part A): daily at 23:30 Israel time and after each successful
 // sync, through the panel's own caches and limits (no new data source). See holding-rules.ts.

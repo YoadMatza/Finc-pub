@@ -68,6 +68,9 @@ export function summaryUnavailableKey(code: HoldingNews['summaryUnavailableCode'
   return (c ? `news_s_${c}` : 'news_s_unknown') as Key;
 }
 
+/** The small source note under the headlines: only for Yahoo, the fallback (Finnhub is the usual source, not named). */
+export const headlinesSourceKey = (n: Pick<HoldingNews, 'headlines' | 'headlinesSource'>): Key | null => (n.headlinesSource === 'yahoo' && n.headlines.length > 0 ? 'news_via_yahoo' : null);
+
 /** The tone dot: filled green / red / grey, or hollow when not toned. */
 export function toneDot(tone: NewsHeadline['tone']): { className: string; label: Key } {
   switch (tone) {

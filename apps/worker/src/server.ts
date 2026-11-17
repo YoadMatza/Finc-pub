@@ -12,6 +12,7 @@ import { log } from './logger.js';
 import type { HoldingRulesService } from './holding-rules.js';
 import type { FinnhubService } from './finnhub.js';
 import type { InsightsService } from './insights.js';
+import type { YahooNewsService } from './yahoo-news.js';
 import type { SecService } from './sec.js';
 import type { PriceService } from './prices.js';
 import type { Scheduler } from './scheduler.js';
@@ -34,6 +35,8 @@ export interface WorkerState {
   sec?: Pick<SecService, 'company'>;
   /** Finnhub for the panel's analysts and earnings sections; absent when insights are off (the key is in the vault) */
   finnhub?: Pick<FinnhubService, 'lookup' | 'news'>;
+  /** Yahoo Finance company news, the news panel's fallback when Finnhub has no headlines; absent when insights are off */
+  yahooNews?: Pick<YahooNewsService, 'news'>;
   /** the insights panel's deadlines (insights-panel.ts); tests shorten them */
   panelDeadlines?: { secMs?: number; finnhubMs?: number };
   /** the owner's holding rules (daily and after-sync evaluation); absent in tests that do not need it */

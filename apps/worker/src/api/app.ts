@@ -215,6 +215,8 @@ import { log } from '../logger.js';
 import { HostKeyChangedError, NAS_ENTRY, OffsiteBusyError, OffsiteLockedError, OffsiteNotConfiguredError, OffsiteSetup, OffsiteSetupError, type OffsiteStatus, type SetupDeps } from '../offsite.js';
 import { rulesForPanel } from '../holding-rules.js';
 import { buildPanel, withinMs } from '../insights-panel.js';
+import type { FinnhubNews } from '../finnhub.js';
+import type { YahooNews } from '../yahoo-news.js';
 import type { WorkerState } from '../server.js';
 import { ChatMemory } from './chat-memory.js';
 import { Attempts, BUSY, LockedFailures, OneAtATime, Pairings, PinGuard, type SessionEntry, Sessions, tokenMatches } from './auth.js';
@@ -1718,9 +1720,10 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     return c.json({ ...out, rules, signals: signalsBoard(out, rules, cachedNewsTones(row.symbol)) });
   });
   // --- decision aids C (research_notes/proposals/stock-decision-aids.md): a held stock's news and an AI summary of it.
-  // Headlines from Finnhub (the same key and limits as analysts); the summary from the chat's provider, checked by code
+  // Headlines from Finnhub (the same key and limits as analysts), else from Yahoo Finance (yahoo-news.ts; `headlinesSource`
+  // says which); the summary from the chat's provider, checked by code
   // (core insights/news.ts) before it is shown, cached 12 hours per stock and set of headlines, counted under the chat
-  // limits for callers away from home (P2-02). What leaves the PC: the ticker to Finnhub; public headlines and the
+  // limits for callers away from home (P2-02). What leaves the PC: the ticker to Finnhub (and to Yahoo for the fallback); public headlines and the
   // panel's public market facts to the AI provider. Never a quantity, cost, gain or account.
   const newsTonesKey = (sym: string) => `tones:${sym.toUpperCase()}`;
   const cachedNewsTones = (sym: string): Array<{ tone: NewsTone | null }> | null => {
@@ -1747,11 +1750,24 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     if (!row || row.kind !== 'security') throw new HTTPException(404, { message: 'no such holding in the latest snapshot' });
     const t = now();
     const base = { symbol: row.symbol, fetchedAt: new Date(t).toISOString(), stale: false, headlines: [] as NewsHeadline[], summary: null as null | { sentences: Array<{ text: string; cites: string[] }>; model: string; generatedAt: string } };
-    if (!state.finnhub) return c.json({ ...base, headlinesUnavailableCode: 'off', summaryUnavailableCode: 'off' });
-    const got = await state.finnhub.news(row.symbol);
+    if (!state.finnhub && !state.yahooNews) return c.json({ ...base, headlinesUnavailableCode: 'off', summaryUnavailableCode: 'off' });
+    // Finnhub first; Yahoo when Finnhub is not set up, fails, or has no headline of the last 14 days (foreign listings)
+    const fh = state.finnhub ? await state.finnhub.news(row.symbol) : null;
+    let got: FinnhubNews | YahooNews | null = fh;
+    let headlines = fh?.ok ? selectHeadlines(fh.rows, t) : [];
+    let headlinesSource: 'finnhub' | 'yahoo' = 'finnhub';
+    if (!headlines.length && state.yahooNews) {
+      const y = await state.yahooNews.news(row.symbol);
+      const yh = y.ok ? selectHeadlines(y.rows, t) : [];
+      if (yh.length) {
+        got = y;
+        headlines = yh;
+        headlinesSource = 'yahoo';
+      } else if (!fh || (!fh.ok && y.ok)) got = y;
+    }
+    if (!got) return c.json({ ...base, headlinesUnavailableCode: 'off', summaryUnavailableCode: 'off' });
     if (!got.ok) return c.json({ ...base, headlinesUnavailableCode: got.code, summaryUnavailableCode: 'too_few' });
-    const headlines = selectHeadlines(got.rows, t);
-    const out = { ...base, fetchedAt: new Date(got.fetchedAt).toISOString(), stale: got.stale, headlines };
+    const out = { ...base, fetchedAt: new Date(got.fetchedAt).toISOString(), stale: got.stale, headlines, ...(headlines.length ? { headlinesSource } : {}) };
     if (!headlines.length) return c.json({ ...out, headlinesUnavailableCode: 'none', summaryUnavailableCode: 'too_few' });
     const withTones = (tones: Record<string, NewsTone>) => headlines.map((h) => ({ ...h, tone: tones[h.id] ?? null }));
     const sym = row.symbol.toUpperCase();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adviceIn, checkNewsSummary, newsFacts, newsSummaryPrompt, newsToneReading, parseCompanyNews, selectHeadlines } from './news.js';
+import { adviceIn, checkNewsSummary, newsFacts, newsSummaryPrompt, newsToneReading, parseCompanyNews, parseYahooNews, selectHeadlines, yahooNewsPath } from './news.js';
 import { unavailableInsights } from './panel.js';
 import { signalsBoard } from './signals.js';
 
@@ -29,6 +29,47 @@ describe('company news', () => {
     expect(h.filter((x) => x.title.startsWith('Demo Corp beats'))).toHaveLength(1);
     expect(h.some((x) => x.title === 'Old story')).toBe(false);
     expect(parseCompanyNews({ not: 'an array' })).toBeNull();
+  });
+});
+
+describe('Yahoo search news (the fallback)', () => {
+  const y = (title: string, iso: string, extra: Record<string, unknown> = {}) => ({ uuid: 'x', title, publisher: 'Demo Wire', link: `https://news.example/y/${encodeURIComponent(title)}`, providerPublishTime: sec(iso), type: 'STORY', ...extra });
+
+  it('keeps https items about the symbol as plain text; drops http, undated and unrelated ones', () => {
+    const body = {
+      count: 6,
+      quotes: [],
+      news: [
+        y('Demo Group sells a unit', '2026-11-14T12:00:00Z', { relatedTickers: ['DEMOY', 'DEMO.XX'] }),
+        y('No related list', '2026-11-13T12:00:00Z'),
+        y('Insecure', '2026-11-13T12:00:00Z', { link: 'http://news.example/a' }),
+        y('No date', '2026-11-13T12:00:00Z', { providerPublishTime: 'today' }),
+        y('<i>Demo</i> wins a contract ‮', '2026-11-15T12:00:00Z', { relatedTickers: ['demoy'] }),
+        y('Another company entirely', '2026-11-15T12:00:00Z', { relatedTickers: ['OTHER'] }),
+        y('Bad related list', '2026-11-15T12:00:00Z', { relatedTickers: 'DEMOY' }),
+        null,
+        'junk',
+      ],
+    };
+    const rows = parseYahooNews(body, 'DEMOY')!;
+    expect(rows.map((r) => r.title)).toEqual(['Demo Group sells a unit', 'No related list', 'Demo wins a contract']);
+    expect(rows.every((r) => r.url.startsWith('https://') && r.summary === null && r.source === 'Demo Wire')).toBe(true);
+    expect(rows[0]!.at).toBe(Date.parse('2026-11-14T12:00:00Z'));
+    expect(selectHeadlines(rows, NOW)[0]).toMatchObject({ id: 'h1', title: 'Demo wins a contract' });
+  });
+
+  it('refuses an answer of the wrong shape; caps the title', () => {
+    const fails: string[] = [];
+    expect(parseYahooNews([y('A', '2026-11-14T12:00:00Z')], 'DEMOY', (c) => fails.push(c))).toBeNull();
+    expect(parseYahooNews({ news: 'none' }, 'DEMOY')).toBeNull();
+    expect(parseYahooNews(null, 'DEMOY')).toBeNull();
+    expect(fails).toEqual(['no_news_array']);
+    expect(parseYahooNews({ news: [] }, 'DEMOY')).toEqual([]);
+    expect(parseYahooNews({ news: [y('x'.repeat(1000), '2026-11-14T12:00:00Z')] }, 'DEMOY')![0]!.title).toHaveLength(300);
+  });
+
+  it('the request carries the ticker only', () => {
+    expect(yahooNewsPath('DEMOY')).toBe('/v1/finance/search?q=DEMOY&quotesCount=0&newsCount=10&enableFuzzyQuery=false');
   });
 });
 

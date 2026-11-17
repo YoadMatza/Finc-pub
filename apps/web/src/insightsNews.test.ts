@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { en, he } from './i18n';
-import { citeMark, citeMarks, factKey, headlineAnchor, headlineNumber, headlinesUnavailableKey, newsLink, summaryUnavailableKey, toneDot } from './insightsNews';
+import { citeMark, citeMarks, factKey, headlineAnchor, headlineNumber, headlinesSourceKey, headlinesUnavailableKey, newsLink, summaryUnavailableKey, toneDot } from './insightsNews';
 
 const ids = new Set(['h1', 'h2', 'h3']);
 
@@ -74,5 +74,17 @@ describe('tone dot and links', () => {
     expect(newsLink('https://example.com/a?b=1')).toBe('https://example.com/a?b=1');
     for (const u of ['http://example.com/', 'javascript:alert(1)', 'https://user:pw@example.com/', 'https://exa mple.com/', 'https://example.com\\@evil.com', 'https://', 'data:text/html,x', 'https://example.com:8443/x', 'https://localhost/x', 'https://example./x', 42, null])
       expect(newsLink(u)).toBeNull();
+  });
+});
+
+describe('the headlines source note', () => {
+  const h = { id: 'h1', title: 'Demo', source: 'Demo Wire', url: 'https://news.example/1', publishedAt: '2026-11-15T12:00:00Z', summary: null, tone: null };
+  it('names Yahoo only when it gave the headlines; Finnhub (the usual source) is not named', () => {
+    expect(headlinesSourceKey({ headlines: [h], headlinesSource: 'yahoo' })).toBe('news_via_yahoo');
+    expect(headlinesSourceKey({ headlines: [h], headlinesSource: 'finnhub' })).toBeNull();
+    expect(headlinesSourceKey({ headlines: [h] })).toBeNull();
+    expect(headlinesSourceKey({ headlines: [], headlinesSource: 'yahoo' })).toBeNull();
+    expect(en.news_via_yahoo).toBe('via Yahoo Finance');
+    expect(he.news_via_yahoo).toBe('דרך Yahoo Finance');
   });
 });

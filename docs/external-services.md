@@ -17,7 +17,7 @@ security alerts work while the vault is locked).
 | RiseUp API | No (history import only) | RiseUp personal access token | vault: `riseup` | your RiseUp subscription |
 | OpenAI **or** Anthropic **or** a local model | No (chat, AI categorisation, stock news summary) | API key, or none for a local model | vault: `ai_openai` / `ai_anthropic` | pay per use, cents a day |
 | Telegram Bot API | No, but recommended (alerts, one-time codes) | two bots from @BotFather | vault: `telegram`; `data/alarm-bot.json` | free |
-| Yahoo Finance (public chart endpoint) | No (live prices, stock facts) | none | — | free |
+| Yahoo Finance (public chart and search endpoints) | No (live prices, stock facts, company news when Finnhub has none) | none | — | free |
 | SEC EDGAR | No (company figures for US stocks) | none, a contact e-mail | `.env`: `FINC_SEC_CONTACT` | free |
 | Finnhub | No (analysts' ratings, earnings dates, company news) | free API key | vault: `finnhub` | free tier |
 | DuckDNS | Only for access from outside home | DuckDNS account + token | `secrets/caddy.env` | free |
@@ -77,9 +77,9 @@ Without any of the optional services finc still syncs your banks, computes every
 
 | | |
 |---|---|
-| **For** | Live prices for held stocks and the dollar rate between bank syncs, and the price history behind the stock facts panel. |
-| **Hosts** | `query1.finance.yahoo.com`, `query2.finance.yahoo.com` (the public chart endpoint; no account). |
-| **Sent** | Ticker symbols only, in the URL. Never quantities, values, accounts or names. No cookies. |
+| **For** | Live prices for held stocks and the dollar rate between bank syncs, the price history behind the stock facts panel, and a held stock's recent company news as a fallback when Finnhub is not set up, fails or has none for it (foreign listings such as OTC ADRs). |
+| **Hosts** | `query1.finance.yahoo.com`, `query2.finance.yahoo.com` (the public chart endpoint, and the search endpoint for news; no account). |
+| **Sent** | Ticker symbols only, in the URL. Never quantities, values, accounts or names. No cookies. News is fetched only when a stock's news panel is opened and Finnhub had no headlines, at most once per stock every 12 hours. |
 | **Turn off** | `FINC_LIVE_PRICES=off` in `.env`. |
 
 ## SEC EDGAR (optional)

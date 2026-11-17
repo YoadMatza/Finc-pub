@@ -1164,7 +1164,7 @@ export interface NewsHeadline {
   /** https only */
   url: string;
   publishedAt: string;
-  /** Finnhub's one-line summary */
+  /** Finnhub's one-line summary (Yahoo gives none) */
   summary: string | null;
   /** null = not toned */
   tone: 'positive' | 'neutral' | 'negative' | null;
@@ -1178,6 +1178,8 @@ export interface HoldingNews {
   stale: boolean;
   headlines: NewsHeadline[];
   headlinesUnavailableCode?: 'off' | 'no_key' | 'vault_locked' | 'not_covered' | 'busy' | 'unreachable' | 'invalid' | 'none';
+  /** where the headlines came from, when there are any (Yahoo is the fallback when Finnhub has none) */
+  headlinesSource?: 'finnhub' | 'yahoo';
   summary: {
     /** cites are headline ids ('h3') or fact ids ('f:trend', 'f:market', 'f:company', 'f:analysts', 'f:filing:<n>') */
     sentences: Array<{ text: string; cites: string[] }>;
