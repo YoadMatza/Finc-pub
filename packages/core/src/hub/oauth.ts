@@ -129,8 +129,11 @@ export function acceptClientMetadata(db: Db, url: string, doc: unknown, now: num
   if (!app || !d || d.client_id !== url) return { ok: false, error: 'invalid_client_metadata', description: 'not an accepted client' };
   const r = appForRedirects(d.redirect_uris);
   if (!r || r.app !== app) return { ok: false, error: 'invalid_redirect_uri', description: 'the document lists callbacks finc does not accept' };
+  // a public client with PKCE: its preferred method, or one it lists as supported (ChatGPT prefers private_key_jwt and
+  // lists "none" too; finc advertises "none" only, so that is what it uses; found live 2026-11-17)
   const auth = d.token_endpoint_auth_method ?? 'none';
-  if (auth !== 'none') return { ok: false, error: 'invalid_client_metadata', description: 'only public clients with PKCE' };
+  const supported = Array.isArray(d.token_endpoint_auth_methods_supported) ? (d.token_endpoint_auth_methods_supported as unknown[]) : [];
+  if (auth !== 'none' && !supported.includes('none')) return { ok: false, error: 'invalid_client_metadata', description: 'only public clients with PKCE' };
   db.$client
     .prepare(`insert into oauth_client (client_id, kind, app, redirect_uris, created_at) values (?, 'cimd', ?, ?, ?) on conflict(client_id) do update set redirect_uris = excluded.redirect_uris`)
     .run(url, app, JSON.stringify(r.uris), iso(now));

@@ -23,7 +23,8 @@ const row = (date: string, amount: number, description: string): NormalizedRow =
 
 function fakeWebAuthn(): Partial<WebAuthnFns> {
   return {
-    generateAuthenticationOptions: (async (o: { challenge: string }) => ({ challenge: o.challenge, rpId: 'finc-example.duckdns.org', allowCredentials: [], userVerification: 'required' })) as never,
+    // like the library: the given challenge (bytes, or a string taken as UTF-8) goes out base64url-encoded
+    generateAuthenticationOptions: (async (o: { challenge: string | Uint8Array }) => ({ challenge: Buffer.from(typeof o.challenge === 'string' ? Buffer.from(o.challenge, 'utf8') : o.challenge).toString('base64url'), rpId: 'finc-example.duckdns.org', allowCredentials: [], userVerification: 'required' })) as never,
     verifyAuthenticationResponse: (async (opts: Record<string, unknown>) => {
       const r = opts.response as { id: string; challengeEcho?: string };
       if (r.challengeEcho !== opts.expectedChallenge) throw new Error('Unexpected authentication response challenge');
@@ -116,6 +117,8 @@ describe('remote MCP', () => {
     await turnOn(env);
     const r = await mcp(env, null, 'tools/list');
     expect(r.status).toBe(401);
+    // ChatGPT's first probe (found live): any content type, no token → the 401 that starts OAuth, never a 415
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded']) expect((await env.req('/mcp', { method: 'POST', headers: { ...EDGE, 'content-type': type }, body: '' })).status).toBe(401);
     expect(r.headers.get('www-authenticate')).toBe(`Bearer resource_metadata="${BASE}/.well-known/oauth-protected-resource/mcp", scope="finc.read"`);
     expect((await env.req('/.well-known/oauth-protected-resource/mcp', { headers: EDGE })).body).toEqual({ resource: RESOURCE, authorization_servers: [BASE], scopes_supported: ['finc.read'], bearer_methods_supported: ['header'], resource_name: 'finc' });
     expect((await env.req('/.well-known/oauth-authorization-server', { headers: EDGE })).body).toMatchObject({ issuer: BASE, code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], client_id_metadata_document_supported: true, authorization_response_iss_parameter_supported: true });

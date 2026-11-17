@@ -555,7 +555,10 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     // OAuth's token endpoint takes a form by its standard (RFC 6749 §4.1.3); it reads no cookie, so a cross-site form
     // gains nothing there (remote MCP)
     const formOk = c.req.path === '/oauth/token' && type !== undefined && /^application\/x-www-form-urlencoded\s*(;|$)/i.test(type);
-    if (type !== undefined && !formOk && !/^application\/json\s*(;|$)/i.test(type)) return c.json({ error: 'send JSON' }, 415);
+    // /mcp checks its own bearer token (no cookie) and parses its own body; an app's first probe must get the 401 that
+    // starts OAuth, whatever content type it sends (found live with ChatGPT 2026-11-17: it got 415 and stopped)
+    const mcpOk = c.req.path === '/mcp';
+    if (type !== undefined && !formOk && !mcpOk && !/^application\/json\s*(;|$)/i.test(type)) return c.json({ error: 'send JSON' }, 415);
     return next();
   });
 
@@ -1283,9 +1286,10 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const r = pendingFor(c.req.param('id'));
     if (!r.ok) return pendingError(c, r);
     const rp = requireRp();
-    const challenge = randomBytes(32).toString('base64url');
-    r.p.webauthnChallenge = challenge;
-    const options = await webauthn.generateAuthenticationOptions({ rpID: rp.rpId, userVerification: 'required', allowCredentials: [], challenge });
+    // random bytes; the challenge to expect is the one the options carry (the library base64url-encodes what it is
+    // given; a string would be encoded again, so the browser would sign something else; found live 2026-11-17)
+    const options = await webauthn.generateAuthenticationOptions({ rpID: rp.rpId, userVerification: 'required', allowCredentials: [], challenge: new Uint8Array(randomBytes(32)) });
+    r.p.webauthnChallenge = options.challenge;
     return c.json(options);
   });
   app.post('/api/oauth/requests/:id/approve', async (c) => {

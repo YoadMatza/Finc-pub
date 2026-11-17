@@ -57,6 +57,10 @@ describe('which apps may connect', () => {
     expect(acceptClientMetadata(db, 'https://evil.example/client.json', { client_id: 'https://evil.example/client.json', redirect_uris: [CLAUDE] }, T0)).toMatchObject({ ok: false });
     expect(acceptClientMetadata(db, url, { client_id: 'https://other', redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'] }, T0)).toMatchObject({ ok: false });
     expect(acceptClientMetadata(db, url, { client_id: url, redirect_uris: [CLAUDE] }, T0)).toMatchObject({ ok: false, error: 'invalid_redirect_uri' });
+    // ChatGPT's real document (2026-11-17): prefers private_key_jwt, lists none; a client with no "none" is refused
+    const live = { client_id: url, redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'], token_endpoint_auth_method: 'private_key_jwt', token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'] };
+    expect(acceptClientMetadata(db, url, live, T0)).toMatchObject({ ok: true });
+    expect(acceptClientMetadata(db, url, { ...live, token_endpoint_auth_methods_supported: ['private_key_jwt'] }, T0)).toMatchObject({ ok: false });
   });
 
   it('the connection window: 10 minutes, then shut; can be closed early', () => {

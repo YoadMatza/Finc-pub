@@ -60,8 +60,14 @@ privacy checks are the same as above; what is new is a sign-in that faces the in
 
 1. **Turn it on** at home: Settings → AI → Remote AI apps. The public address must be set (Settings → Phone access).
 2. Press **Connect an app**. A connection can only start in the next 10 minutes, and only one.
-3. In the app, add a custom connector / MCP server with the address shown (`https://<your host>:7443/mcp`). ChatGPT
-   needs Developer Mode; for Claude, Settings → Connectors → Add custom connector.
+3. In the app, add a custom connector / MCP server with the address shown. ChatGPT: Plugins → Add → Add custom MCP
+   server (OAuth, leave the client fields empty); Claude: Settings → Connectors → Add custom connector.
+
+   **ChatGPT only reaches port 443** (found 2026-11-17: on `:7443` it never called finc). If 443 at home belongs to
+   another server, give remote MCP its own address on 443 through that server's reverse proxy, forwarding only
+   `/mcp`, `/oauth/register`, `/oauth/token`, `/oauth/authorize` and the two `/.well-known/oauth-*` documents to finc's
+   Caddy (TLS again, certificate checked), and set it in finc: `PATCH /api/settings {"ai":{"mcpRemoteUrl":
+   "https://<your host>"}}` from home. The approval page stays on the hub's address, where the passkeys work.
 4. The app opens finc's approval page: check the app's name and where it returns, then **Approve with passkey**.
 
 You get a Telegram alert for every approval. Settings lists each connected app with its last use and calls today;
