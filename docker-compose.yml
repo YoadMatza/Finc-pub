@@ -23,9 +23,8 @@ services:
     container_name: finc-worker
     restart: unless-stopped
     logging: *logging
-    # Memory caps (P2-12): a runaway container cannot take the PC down. The worker needs room for the bank
-    # scraper's Chromium (about 0.4 GB idle).
-    mem_limit: 2560m
+    # Memory caps (P2-12): a runaway container cannot take the PC down. Chromium lives in the scraper now.
+    mem_limit: 1536m
     env_file:
       - path: .env
         required: false
@@ -49,6 +48,8 @@ services:
       FINC_SEC_CONTACT: ${FINC_SEC_CONTACT:-}
       # Nightly encrypted backups (03:40 local, FINC_BACKUP_TIME) go to the /backup mount below.
       FINC_BACKUP_DIR: /backup
+      # Bank syncs run in the scraper container (scraper-container.md): the job goes over this socket.
+      FINC_SCRAPER_SOCKET: /run/finc-scraper/scraper.sock
       TZ: ${TZ:-Asia/Jerusalem}
     # Control port (health / unlock / the CLI) reachable only from this machine; the phone comes through Caddy.
     ports:
@@ -63,30 +64,71 @@ services:
         target: /data/apk-build
       - type: tmpfs
         target: /data/apk-archive
-      # Bank browser profiles live in a Docker volume, not on the Windows share: there Chromium's private files (the
-      # cookie store) became unreadable to the worker itself, so every sync was a "new device" and FIBI's login
-      # intermittently ignored the button (2026-11-11/12). Copied from data/browser-profiles on 2026-11-12.
-      - browser_profiles:/data/browser-profiles
+      # the socket to the scraper (a volume only these two containers mount; nothing on a network)
+      - scraper_socket:/run/finc-scraper
       # Put backups on ANOTHER physical disk than data/ (FINC_BACKUP_HOST_DIR in .env): one dead disk must not take
       # the database and its backups together. The ./backups default is only a fallback.
       - ${FINC_BACKUP_HOST_DIR:-./backups}:/backup
-    # Chromium needs a bigger /dev/shm than Docker's 64MB default.
-    shm_size: "1gb"
-    # No Linux capabilities and no privilege gain for anything in the container, Chromium included (P0-06).
+    # No Linux capabilities and no privilege gain for anything in the container (P0-06).
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    # Read-only image (security research P2-03): the worker writes only to /data, /backup and these scratch folders
-    # (Chromium's temp files and its home). Chromium runs many threads, so the process limit is generous.
+    # Read-only image (security research P2-03): the worker writes only to /data, /backup, the socket volume and
+    # these scratch folders.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node:uid=1000,gid=1000,mode=0700
+    pids_limit: 512
+    depends_on:
+      - scraper
+    networks:
+      - edge
+
+  # The bank scraper (research_notes/proposals/scraper-container.md): Chromium and israeli-bank-scrapers, one job at a
+  # time over the socket. It holds no vault and no database: the worker sends one institution's login fields for one
+  # job. It sees only the browser profiles, the failure screenshots and the socket; no port, no edge network.
+  scraper:
+    build:
+      context: .
+      target: scraper
+    image: finc-scraper:local
+    container_name: finc-scraper
+    restart: unless-stopped
+    logging: *logging
+    mem_limit: 1536m
+    environment:
+      FINC_DATA_DIR: /scraper-data
+      FINC_SCRAPER_SOCKET: /run/finc-scraper/scraper.sock
+      # Chromium's own sandbox, allowed by the seccomp profile below; "0" falls back to --no-sandbox
+      FINC_CHROMIUM_SANDBOX: ${FINC_CHROMIUM_SANDBOX:-1}
+      TZ: ${TZ:-Asia/Jerusalem}
+    volumes:
+      # Bank browser profiles live in a Docker volume, not on the Windows share: there Chromium's private files (the
+      # cookie store) became unreadable, so every sync was a "new device" and FIBI's login intermittently ignored the
+      # button (2026-11-11/12).
+      - browser_profiles:/scraper-data/browser-profiles
+      - ./data/screenshots:/scraper-data/screenshots
+      - scraper_socket:/run/finc-scraper
+    # Chromium needs a bigger /dev/shm than Docker's 64MB default.
+    shm_size: "1gb"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      # Docker's default profile (moby/profiles@9ee3204f) plus clone/unshare/chroot, so Chromium's namespace sandbox
+      # can start without any capability (deploy/scraper/seccomp-chromium.json)
+      - seccomp=./deploy/scraper/seccomp-chromium.json
     read_only: true
     tmpfs:
       - /tmp
       # owned by the node user: Chromium's crash handler refuses to start without a writable home
       - /home/node:uid=1000,gid=1000,mode=0700
+    # Chromium runs many threads, so the process limit is generous.
     pids_limit: 1024
     networks:
-      - edge
+      - scraper
 
   caddy:
     build: ./deploy/caddy
@@ -190,6 +232,8 @@ services:
         done
 
 networks:
+  # the scraper's own way out to the banks; nothing of finc's is on it
+  scraper: {}
   # Caddy and the worker only. A fixed subnet so Caddy's address is known.
   edge:
     ipam:
@@ -202,3 +246,4 @@ volumes:
   caddy_data:
   caddy_config:
   browser_profiles:
+  scraper_socket:

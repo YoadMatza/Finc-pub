@@ -1,6 +1,11 @@
 # The bank connectors in a container of their own (design note, 2026-11-16)
 
-Security research P0-05/P0-06 leftovers and audit M5. Nothing here is built yet; this note is for a decision.
+Security research P0-05/P0-06 leftovers and audit M5. **Built 2026-11-17** (decisions: build now on the PC; try the
+sandbox, fall back to --no-sandbox): steps 1–4 done. The worker image has no Chromium; the `scraper` image runs
+Chromium behind `/run/finc-scraper/scraper.sock` (connectors/scraper-socket.ts), with Docker's default seccomp profile
+plus clone/unshare/chroot (deploy/scraper/seccomp-chromium.json). On Docker Desktop chrome://sandbox reports the
+namespace layer (PID and network namespaces) and seccomp-BPF on, "adequately sandboxed"; `FINC_CHROMIUM_SANDBOX=0`
+falls back. A real bank sync through it is the last check.
 
 ## 1. Why
 

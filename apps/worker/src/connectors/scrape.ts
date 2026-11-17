@@ -40,6 +40,7 @@ import type { ScraperCredentials, ScraperOptions, ScraperScrapingResult } from '
 import puppeteer, { type Browser, type LaunchOptions, type Page } from 'puppeteer';
 import { log } from '../logger.js';
 import type { OtpProvider } from './otp.js';
+import { scraperClient } from './scraper-socket.js';
 import { hardenBrowserProfile, isIsracardSignedIn, sameOrigin, urlForLog, writePrivate } from './scrape-hygiene.js';
 
 const { CompanyTypes, createScraper } = ibs;
@@ -68,6 +69,8 @@ export interface ScrapeRunOptions {
   launchBrowser?: (opts: LaunchOptions) => Promise<Browser>;
   /** Test seam: replaces israeli-bank-scrapers' createScraper. */
   createScraper?: (opts: ScraperOptions) => ReturnType<typeof createScraper>;
+  /** Who runs the browser: this process (default) or the scraper container (connectors/scraper-client.ts). */
+  scraper?: Scraper;
 }
 
 export interface AccountSummary {
@@ -105,6 +108,118 @@ export function monthsAgo(n: number, now: Date = new Date()): Date {
 
 const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/**
+ * One scrape job: everything the scraper needs and nothing else (scraper container design, step 1). The login fields
+ * travel with the job and are forgotten with it; the scraper never sees the vault or the database.
+ */
+export interface ScrapeJob {
+  institutionId: ScrapedInstitutionId;
+  /** the institution's login fields, for this job only */
+  fields: Record<string, string>;
+  monthsBack: number;
+  showBrowser: boolean;
+  explore: boolean;
+  debug: boolean;
+  timeoutMs?: number;
+}
+
+/** What a scrape job returns: the library's raw result and, for FIBI, the summary page's values and positions. */
+export interface ScrapeOutput {
+  scraped: ScraperScrapingResult;
+  extras?: BeinleumiSummary;
+  holdings?: { securities: HoldingRow[]; fx: HoldingRow[] };
+}
+
+/** Runs one job; throws when the browser or the scraper crashes (the caller records it as CRASH). */
+export type Scraper = (job: ScrapeJob, otp: OtpProvider) => Promise<ScrapeOutput>;
+
+/**
+ * The in-process scraper: launches Chromium with the institution's profile and drives the bank's site. Holds no
+ * database and no vault; the scraper container runs exactly this.
+ */
+export function localScraper(seams: { launchBrowser?: (opts: LaunchOptions) => Promise<Browser>; createScraper?: (opts: ScraperOptions) => ReturnType<typeof createScraper> } = {}): Scraper {
+  return async (job, otp) => {
+    const spec = INSTITUTIONS[job.institutionId];
+    if (!spec.scraperId) throw new Error(`${job.institutionId} is not a scraped institution`);
+    const scraperId = spec.scraperId;
+    const startDate = monthsAgo(job.monthsBack);
+    const profile = path.join(profilesDir(), job.institutionId);
+    mkdirSync(profile, { recursive: true });
+    hardenBrowserProfile(profile); // never save a bank password in the profile (P2-06)
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    log.info({ institution: job.institutionId, headless: !job.showBrowser, profile, startDate: startDate.toISOString().slice(0, 10) }, 'scrape: launching browser');
+
+    // Anti-bot hygiene (israeli-bank-scrapers#1181, Isracard/Cloudflare): no "automation" banner flag,
+    // no navigator.webdriver, a real Accept-Language. Applied to every institution; harmless elsewhere.
+    const launch = seams.launchBrowser ?? ((opts: LaunchOptions) => puppeteer.launch(opts));
+    let b: Browser | null = null;
+    try {
+      b = await launch({
+        headless: !job.showBrowser,
+        userDataDir: profile,
+        ...(executablePath ? { executablePath } : {}),
+        defaultViewport: null,
+        ignoreDefaultArgs: ['--enable-automation'],
+        args: [
+          '--lang=he-IL,he,en-US,en',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-dev-shm-usage',
+          '--no-first-run',
+          '--no-default-browser-check',
+          ...(process.platform === 'linux' && process.env.FINC_CHROMIUM_SANDBOX !== '1' ? ['--no-sandbox'] : []),
+        ],
+      });
+      const browser = b;
+      const userAgent = (await browser.userAgent()).replace('HeadlessChrome/', 'Chrome/');
+      const options: ScraperOptions = {
+        companyId: CompanyTypes[scraperId],
+        startDate,
+        browser,
+        skipCloseBrowser: true,
+        combineInstallments: false,
+        includeRawTransaction: true,
+        ...(job.debug ? {} : { storeFailureScreenShotPath: path.join(screenshotsDir(), `${job.institutionId}-${stamp()}.png`) }),
+        defaultTimeout: job.timeoutMs ?? (job.showBrowser ? 180_000 : 60_000),
+        navigationRetryCount: 3,
+        verbose: job.debug,
+        preparePage: async (page) => {
+          await page.setUserAgent(userAgent);
+          await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+          });
+          await page.setExtraHTTPHeaders({ 'accept-language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7' });
+        },
+      };
+      const scraper = (seams.createScraper ?? createScraper)(options);
+      scraper.onProgress((_company, payload) => log.info({ institution: job.institutionId, step: payload.type }, 'scrape: progress'));
+      if (scraperId === 'beinleumi') {
+        patchBeinleumiSubmit(scraper, job.institutionId);
+        patchBeinleumiFetch(scraper, job.institutionId, job.explore);
+      }
+      if (scraperId === 'isracard') patchIsracardLogin(scraper, job.institutionId, job.showBrowser);
+
+      // The three institutions we use take plain credentials. If a scraper ever asks for an
+      // OTP retriever we pass ours; for the rest, a headful run lets you type the code in the window.
+      const credentials = { ...job.fields, otpCodeRetriever: () => otp({ institutionId: job.institutionId }) } as unknown as ScraperCredentials;
+      if (job.showBrowser) log.info('scrape: if the bank asks for a one-time code, type it in the browser window');
+
+      const scraped = await scraper.scrape(credentials);
+      if (!scraped.success && job.debug) await captureDebugState(browser, job.institutionId);
+      const extras = beinleumiExtras.get(job.institutionId);
+      const holdings = beinleumiHoldings.get(job.institutionId);
+      return { scraped, ...(extras ? { extras } : {}), ...(holdings ? { holdings } : {}) };
+    } catch (e) {
+      if (job.debug && b) await captureDebugState(b, job.institutionId);
+      throw e;
+    } finally {
+      // the scraper has answered (or crashed): free the browser profile now; storing the result needs no browser
+      if (b) await b.close().catch(() => undefined);
+      beinleumiExtras.delete(job.institutionId);
+      beinleumiHoldings.delete(job.institutionId);
+    }
+  };
+}
+
 export async function runScrape(db: Db | null, o: ScrapeRunOptions): Promise<ScrapeRunResult> {
   const t0 = Date.now();
   const spec = INSTITUTIONS[o.institutionId];
@@ -132,94 +247,31 @@ export async function runScrape(db: Db | null, o: ScrapeRunOptions): Promise<Scr
   // From here on every failure ends the run as an error (P1-04): nothing may leave it 'running'.
   // phase: 'CRASH' until the scraper has answered (launch, login, fetch), 'INGEST' while its result is stored.
   let phase: 'CRASH' | 'INGEST' = 'CRASH';
-  const held: { browser: Browser | null } = { browser: null }; // the browser while it is open, so the catch/finally can reach it
   try {
     return await scrapeAndStore();
   } catch (e) {
     const msg = errMessage(e).slice(0, 500);
     log.error({ institution: o.institutionId, phase, err: msg }, 'scrape: crashed');
-    if (o.debug && held.browser) await captureDebugState(held.browser, o.institutionId);
     if (db && runId !== null) finishRunError(db, runId, phase, msg);
     result.success = false;
     result.errorType = phase;
     result.errorMessage = msg;
     result.durationMs = Date.now() - t0;
     return result;
-  } finally {
-    if (held.browser) await held.browser.close().catch(() => undefined);
-    beinleumiExtras.delete(o.institutionId);
-    beinleumiHoldings.delete(o.institutionId);
   }
 
   async function scrapeAndStore(): Promise<ScrapeRunResult> {
-    const startDate = monthsAgo(o.monthsBack);
-    const profile = path.join(profilesDir(), o.institutionId);
-    mkdirSync(profile, { recursive: true });
-    hardenBrowserProfile(profile); // never save a bank password in the profile (P2-06)
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    log.info({ institution: o.institutionId, headless: !o.showBrowser, profile, startDate: startDate.toISOString().slice(0, 10) }, 'scrape: launching browser');
-
-    // Anti-bot hygiene (israeli-bank-scrapers#1181, Isracard/Cloudflare): no "automation" banner flag,
-    // no navigator.webdriver, a real Accept-Language. Applied to every institution; harmless elsewhere.
-    const launch = o.launchBrowser ?? ((opts: LaunchOptions) => puppeteer.launch(opts));
-    const b = await launch({
-      headless: !o.showBrowser,
-      userDataDir: profile,
-      ...(executablePath ? { executablePath } : {}),
-      defaultViewport: null,
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--lang=he-IL,he,en-US,en',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--no-first-run',
-        '--no-default-browser-check',
-        ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
-      ],
-    });
-    held.browser = b;
-
-    let scraped: ScraperScrapingResult;
-    {
-      const userAgent = (await b.userAgent()).replace('HeadlessChrome/', 'Chrome/');
-      const options: ScraperOptions = {
-        companyId: CompanyTypes[scraperId],
-        startDate,
-        browser: b,
-        skipCloseBrowser: true,
-        combineInstallments: false,
-        includeRawTransaction: true,
-        ...(o.debug ? {} : { storeFailureScreenShotPath: path.join(screenshotsDir(), `${o.institutionId}-${stamp()}.png`) }),
-        defaultTimeout: o.timeoutMs ?? (o.showBrowser ? 180_000 : 60_000),
-        navigationRetryCount: 3,
-        verbose: o.debug ?? false,
-        preparePage: async (page) => {
-          await page.setUserAgent(userAgent);
-          await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-          });
-          await page.setExtraHTTPHeaders({ 'accept-language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7' });
-        },
-      };
-      const scraper = (o.createScraper ?? createScraper)(options);
-      scraper.onProgress((_company, payload) => log.info({ institution: o.institutionId, step: payload.type }, 'scrape: progress'));
-      if (scraperId === 'beinleumi') {
-        patchBeinleumiSubmit(scraper, o.institutionId);
-        patchBeinleumiFetch(scraper, o.institutionId, o.explore ?? false);
-      }
-      if (scraperId === 'isracard') patchIsracardLogin(scraper, o.institutionId, o.showBrowser);
-
-      // The three institutions we use take plain credentials. If a scraper ever asks for an
-      // OTP retriever we pass ours; for the rest, a headful run lets you type the code in the window.
-      const credentials = { ...fields, otpCodeRetriever: () => o.otp({ institutionId: o.institutionId }) } as unknown as ScraperCredentials;
-      if (o.showBrowser) log.info('scrape: if the bank asks for a one-time code, type it in the browser window');
-
-      scraped = await scraper.scrape(credentials);
-      if (!scraped.success && o.debug) await captureDebugState(b, o.institutionId);
-    }
-    // The scraper has answered: free the browser profile now; storing the result needs no browser.
-    held.browser = null;
-    await b.close().catch(() => undefined);
+    // the scraper (in this process, or the scraper container) gets this institution's fields for this job only
+    // FINC_SCRAPER_SOCKET (set in the worker container) sends the job to the scraper container; the test seams and a
+    // host run (finc spike, headful logins) keep the browser in this process
+    const seams = o.launchBrowser !== undefined || o.createScraper !== undefined;
+    const socket = process.env.FINC_SCRAPER_SOCKET;
+    const scraper = o.scraper ?? (socket && !seams && !o.showBrowser ? scraperClient(socket) : localScraper({ ...(o.launchBrowser ? { launchBrowser: o.launchBrowser } : {}), ...(o.createScraper ? { createScraper: o.createScraper } : {}) }));
+    const out = await scraper(
+      { institutionId: o.institutionId, fields: { ...fields }, monthsBack: o.monthsBack, showBrowser: o.showBrowser, explore: o.explore ?? false, debug: o.debug ?? false, ...(o.timeoutMs !== undefined ? { timeoutMs: o.timeoutMs } : {}) },
+      o.otp,
+    );
+    const scraped = out.scraped;
     phase = 'INGEST';
 
     if (o.dump) {
@@ -279,7 +331,7 @@ export async function runScrape(db: Db | null, o: ScrapeRunOptions): Promise<Scr
 
     // FIBI's summary page also values the foreign-currency account and the securities portfolio in
     // shekels. The library does not expose them, so they become balance-only accounts of their own.
-    const extras = beinleumiExtras.get(o.institutionId);
+    const extras = out.extras;
     const mainNumber = scraped.accounts?.[0]?.accountNumber;
     if (extras && mainNumber && db && !o.dryRun) {
       const sideAccounts: Array<{ key: 'fxIls' | 'investmentsIls'; type: 'foreign_currency' | 'securities'; suffix: string; label: string }> = [
@@ -301,15 +353,13 @@ export async function runScrape(db: Db | null, o: ScrapeRunOptions): Promise<Scr
           displayName: `FIBI ${side.label} ${maskNumber(mainNumber)}`,
         });
         recordBalance(db, { accountId, runId, balanceMinor: v, source: `${source}:summary` });
-        const rows = beinleumiHoldings.get(o.institutionId)?.[side.suffix === 'fx' ? 'fx' : 'securities'] ?? [];
+        const rows = out.holdings?.[side.suffix === 'fx' ? 'fx' : 'securities'] ?? [];
         if (rows.length) {
           const n = recordHoldings(db, { accountId, runId, source: `${source}:${side.suffix}`, rows });
           log.info({ institution: o.institutionId, account: side.suffix, positions: n }, 'fibi: holdings recorded');
         }
         result.accounts.push({ accountMasked: `${maskNumber(mainNumber)} ${side.suffix}`, accountId, txns: 0, pending: 0, balance: v / 100, created: false });
       }
-      beinleumiExtras.delete(o.institutionId);
-      beinleumiHoldings.delete(o.institutionId);
     }
 
     if (db && runId !== null) {
