@@ -19,6 +19,11 @@ if "%RUNNING%"=="finc-worker" (
     echo stop the worker first: docker compose stop worker
     exit /b 1
   )
+  rem `mcp` (not `mcp token`) is an AI app's MCP server: JSON-RPC on stdin/stdout, so no TTY (-T)
+  if /i "%CMD1%"=="mcp" if /i not "%CMD2%"=="token" (
+    docker compose -f "%~dp0docker-compose.yml" exec -T worker node apps/worker/dist/cli.js %*
+    exit /b %ERRORLEVEL%
+  )
   docker compose -f "%~dp0docker-compose.yml" exec -it worker node apps/worker/dist/cli.js %*
   exit /b %ERRORLEVEL%
 )

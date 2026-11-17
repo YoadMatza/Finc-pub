@@ -34,6 +34,18 @@ import {
   deviceIdleDays,
   setDeviceIdleDays,
   revokeAllDevices,
+  MCP_PER_DAY,
+  createMcpToken,
+  MCP_PER_MINUTE,
+  listMcpTokens,
+  mcpEnabled,
+  mcpToolList,
+  MCP_INSTRUCTIONS,
+  revokeAllMcpTokens,
+  revokeMcpToken,
+  runMcpTool,
+  setMcpEnabled,
+  useMcpToken,
   revokeAllPasskeys,
   categoriesOverview,
   connectionHealth,
@@ -406,10 +418,17 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       },
       who,
     );
+    // AI apps lose access too (MCP design §5.4); a failure here must not stop the lockdown record
+    let mcpTokens = 0;
+    try {
+      mcpTokens = revokeAllMcpTokens(state.db);
+    } catch (e) {
+      log.warn({ err: e instanceof Error ? e.message : String(e) }, 'lockdown: revoking MCP tokens failed');
+    }
     recordSecurityEvent(state.db, {
       ...actor,
       kind: 'lockdown.run',
-      detail: { by: who, ok: r.ok, devices: r.devices, passkeys: r.passkeys, sessions: r.sessions, vaultLocked: r.vaultLocked, alerted: r.alerted, ...(r.errors ? { errors: r.errors.length } : {}) },
+      detail: { by: who, ok: r.ok, mcpTokens, devices: r.devices, passkeys: r.passkeys, sessions: r.sessions, vaultLocked: r.vaultLocked, alerted: r.alerted, ...(r.errors ? { errors: r.errors.length } : {}) },
       at: now(),
     });
     return r;
@@ -477,7 +496,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     await next();
     c.res.headers.set('Cache-Control', 'no-store');
   };
-  for (const p of ['/api/*', '/health', '/whoami', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
+  for (const p of ['/api/*', '/mcp/*', '/health', '/whoami', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
   /**
    * Writes from another site are refused for everyone, signed in or not (review of P1-06/P1-07): a page on evil.example
    * can POST blind to http://127.0.0.1:7733/api/auth/login without rebinding (Host is then allowed) and lock the PIN.
@@ -1607,6 +1626,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         chatModel: ai.chatModel,
         // decision aids C: the AI summary of a stock's news (headlines show either way); on unless turned off
         newsSummary: getSetting(state.db, NEWS_SUMMARY_SETTING) !== 'off',
+        // MCP: AI apps may read finc's privacy-checked tools (off by default)
+        mcp: mcpEnabled(state.db),
         chatModels: ai.provider === 'openai' || ai.provider === 'anthropic' ? CHAT_MODELS[ai.provider] : null,
       },
       schedule: state.scheduler.config,
@@ -1765,6 +1786,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
             chatModel: z.string().max(80).nullable().optional(),
             // decision aids C: the AI summary of stock news on / off
             newsSummary: z.boolean().optional(),
+            // MCP: on only from home (not a passkey); off from anywhere
+            mcp: z.boolean().optional(),
           })
           .optional(),
         // P1-09: days a paired device may go unused before its token is revoked; 0 = never
@@ -1883,6 +1906,11 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         if (body.ai.newsSummary !== undefined) {
           setSetting(state.db, NEWS_SUMMARY_SETTING, body.ai.newsSummary ? null : 'off');
           changed.push('ai.newsSummary');
+        }
+        if (body.ai.mcp !== undefined) {
+          if (body.ai.mcp) requireTrusted(c);
+          setMcpEnabled(state.db, body.ai.mcp);
+          changed.push('ai.mcp');
         }
       }
     } finally {
@@ -2108,7 +2136,85 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     if (authOf(c) === 'token' || trusted(c)) return c.json(out);
     return c.json({ ...out, events: out.events.map((e) => ({ ...e, address: null })) });
   });
+  // MCP (research_notes/proposals/mcp-server.md §5.4): the owner sees and revokes AI apps' tokens; tokens are made
+  // on the PC only (`finc mcp token create`). Revoking takes access away, so any signed-in caller may do it.
+  api.get('/mcp/tokens', (c) =>
+    c.json({ enabled: mcpEnabled(state.db), tokens: listMcpTokens(state.db, new Date(now())).map((t) => ({ name: t.name, createdAt: t.createdAt, lastUsedAt: t.lastUsedAt, callsToday: t.callsToday })) }),
+  );
+  // making one is for the CLI on the PC only (the control token): `finc mcp token create <app>` keeps it in a file
+  api.post('/mcp/tokens', async (c) => {
+    if (authOf(c) !== 'token') throw new HTTPException(403, { message: 'MCP tokens are made on the PC: .\\finc mcp token create <app-name>' });
+    const body = z.object({ name: z.string().max(40) }).strict().safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: 'body: {"name": "claude-desktop"}' }, 400);
+    try {
+      const t = createMcpToken(state.db, body.data.name, new Date(now()));
+      record(c, 'mcp.token_created', { name: t.name });
+      return c.json({ name: t.name, token: t.token });
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : 'could not make the token' }, 400);
+    }
+  });
+  api.delete('/mcp/tokens/:name', (c) => {
+    const name = c.req.param('name');
+    if (!revokeMcpToken(state.db, name, new Date(now()))) return c.json({ error: 'no such token' }, 404);
+    record(c, 'mcp.token_revoked', { name: name.slice(0, 40) });
+    return c.json({ ok: true });
+  });
   app.route('/api', api);
+
+  // --- the MCP bridge's routes (design §4). Outside /api so no hub sign-in applies: only an MCP token works, only
+  // while MCP is on, never through the public site (X-Finc-Edge; Caddy also answers 404). The bridge runs inside the
+  // container (`finc mcp`) and calls 127.0.0.1. Results go through runMcpTool: allow-list, egress guard, size cap.
+  const mcpMinute = new Map<number, { start: number; n: number }>();
+  type McpGate = { ok: true; id: number; name: string } | { ok: false; res: Response };
+  const mcpGate = (c: Context): McpGate => {
+    if (c.req.header('x-finc-edge') !== undefined) return { ok: false, res: c.json({ error: 'not found' }, 404) };
+    if (!mcpEnabled(state.db)) {
+      record(c, 'mcp.refused', { reason: 'off' }, { aggregate: true });
+      return { ok: false, res: c.json({ error: 'MCP is off in finc; turn it on in Settings → AI' }, 403) };
+    }
+    const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '');
+    const t = now();
+    const a = useMcpToken(state.db, bearer, new Date(t));
+    if (!a.ok) {
+      record(c, 'mcp.refused', { reason: a.reason }, { aggregate: true });
+      return a.reason === 'daily_limit'
+        ? { ok: false, res: c.json({ error: `this app reached its ${MCP_PER_DAY} calls for today` }, 429) }
+        : { ok: false, res: c.json({ error: 'unknown or revoked MCP token' }, 401) };
+    }
+    const w = mcpMinute.get(a.token.id);
+    if (w && t - w.start < 60_000) {
+      if (w.n >= MCP_PER_MINUTE) {
+        record(c, 'mcp.refused', { reason: 'minute_limit' }, { aggregate: true });
+        return { ok: false, res: c.json({ error: `at most ${MCP_PER_MINUTE} calls a minute; wait a moment` }, 429) };
+      }
+      w.n++;
+    } else {
+      if (mcpMinute.size > 200) mcpMinute.clear();
+      mcpMinute.set(a.token.id, { start: t, n: 1 });
+    }
+    return { ok: true, id: a.token.id, name: a.token.name };
+  };
+  app.get('/mcp/tools', (c) => {
+    const g = mcpGate(c);
+    if (!g.ok) return g.res;
+    return c.json({ instructions: MCP_INSTRUCTIONS, tools: mcpToolList() });
+  });
+  app.post('/mcp/call', async (c) => {
+    const g = mcpGate(c);
+    if (!g.ok) return g.res;
+    const parsed = z
+      .object({ name: z.string().min(1).max(60), arguments: z.record(z.string(), z.unknown()).optional() })
+      .strict()
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: 'body: {"name": tool, "arguments": {...}}' }, 400);
+    const { name, arguments: args } = parsed.data;
+    const out = runMcpTool(state.db, name, args ?? {}, todayLocal(new Date(now())));
+    if (out.dropped.length) log.warn({ tool: name, dropped: out.dropped.slice(0, 10) }, 'mcp: the allow-list dropped fields');
+    // the tool and the argument names, never their values or the result
+    record(c, 'mcp.call', { tool: name.slice(0, 40), args: Object.keys(args ?? {}).slice(0, 10), error: out.isError }, { aggregate: true, who: { actor: `mcp:${g.id}`, actorName: g.name } });
+    return c.json({ structured: out.structured, isError: out.isError });
+  });
 
   // --- control endpoints kept for the CLI (token) and anyone with a session
   // Without a token or a session the health answer says only that the worker is up (audit C2: the full

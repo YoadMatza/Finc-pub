@@ -623,3 +623,19 @@ export const marketDataCache = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.source, t.key] })],
 );
+
+/**
+ * An AI app allowed to read finc through MCP (research_notes/proposals/mcp-server.md §5.4). Only the token's SHA-256
+ * is kept; the token itself sits in data/mcp/<name>.token for the local bridge. Read-only tools only; revocation is a
+ * timestamp. `calls_day` / `calls_today` count the calls of one local day for the daily limit and the Settings list.
+ */
+export const mcpToken = sqliteTable('mcp_token', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  tokenHash: text('token_hash').notNull().unique(),
+  createdAt: text('created_at').notNull(),
+  lastUsedAt: text('last_used_at'),
+  revokedAt: text('revoked_at'),
+  callsDay: text('calls_day'),
+  callsToday: integer('calls_today').notNull().default(0),
+});

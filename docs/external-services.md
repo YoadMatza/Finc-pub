@@ -23,6 +23,7 @@ security alerts work while the vault is locked).
 | DuckDNS | Only for access from outside home | DuckDNS account + token | `secrets/caddy.env` | free |
 | Let's Encrypt | Only for access from outside home | none (automatic) | — | free |
 | A NAS over SFTP (your own) | No (off-machine backup copies) | an upload-only SSH user | vault: `nas_backup` | your hardware |
+| An AI app of your choice over MCP (Claude Desktop, Claude Code…) | No, off by default | a finc MCP token per app | `data/mcp/<app>.token` | the app's own plan |
 
 Without any of the optional services finc still syncs your banks, computes every number, and shows the hub at home.
 
@@ -124,6 +125,15 @@ passkeys from outside.
 | **Turn off** | `finc backup nas remove`. |
 
 ---
+
+## An AI app over MCP (optional, off by default)
+
+| | |
+|---|---|
+| **For** | Asking an AI app you already use about your money. The app starts `finc mcp` on this PC and calls finc's read-only tools. Setup: [docs/mcp.md](mcp.md). |
+| **Account / key** | A finc token per app, made on the PC (`.\finc mcp token create <app>`), kept in `data/mcp/<app>.token`, never shown; the app's settings name the app, not the token. |
+| **Sent** | To the app, and from it to **its** model provider: the same as finc's chat sends (spending totals, categories, dates, counts, your own stream labels and event names, card-purchase merchant names). Never account or card numbers, bank descriptions, notes, payers, balances per account, or anything from the vault. Every result passes an allow-list per tool and a final scrub of identifiers. finc never contacts the app's provider itself. |
+| **Turn off** | Settings → AI → AI apps (MCP), or revoke one app there or with `.\finc mcp token revoke <app>`. The panic button revokes every app. |
 
 ## Downloads when you build or update (not at run time)
 

@@ -654,6 +654,19 @@ export interface AccountsOverview {
   runs: Array<{ id: number; institutionId: string; source: string; trigger: string; startedAt: string; endedAt: string | null; status: string; rowsSeen: number; rowsNew: number; rowsUpdated: number; errorType: string | null; error: string | null }>;
 }
 
+/** One AI-app token (MCP). Created on the PC only; the hub sees the name and its use, never the token. */
+export interface McpToken {
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  callsToday: number;
+}
+/** GET /api/mcp/tokens: revoked tokens are not listed. */
+export interface McpTokensPayload {
+  enabled: boolean;
+  tokens: McpToken[];
+}
+
 export interface Settings {
   version: string;
   language: 'he' | 'en';
@@ -668,6 +681,8 @@ export interface Settings {
     chatModels?: { fast: string; better: string } | null;
     /** the AI summary of stock news (decision aids C); headlines show either way. Absent from older workers: on. */
     newsSummary?: boolean;
+    /** AI apps may read finc over MCP (mcp-server.md §5.4). Off by default; absent from older workers: off. */
+    mcp?: boolean;
   };
   schedule: { times: string[]; jitterMinutes: number; timezone: string; monthsBack: number };
   vault: 'unlocked' | 'locked' | 'missing';

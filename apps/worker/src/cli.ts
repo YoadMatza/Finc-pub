@@ -20,6 +20,7 @@ import { guardHostRun } from './cli/guard.js';
 import { workerUp } from './cli/worker-client.js';
 import { registerHealthCommands } from './cli/health.js';
 import { registerImportCommands } from './cli/import.js';
+import { registerMcpCommands } from './cli/mcp.js';
 import { registerMonthCommands } from './cli/month.js';
 import { registerPanicCommands } from './cli/panic.js';
 import { registerRecurringCommands } from './cli/recurring.js';
@@ -73,6 +74,7 @@ registerBackupCommands(program);
 registerAlertCommands(program);
 registerPanicCommands(program);
 registerEventsCommands(program);
+registerMcpCommands(program);
 
 try {
   await program.parseAsync(process.argv);

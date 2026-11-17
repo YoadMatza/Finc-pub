@@ -127,6 +127,13 @@
       "when": 1794835239053,
       "tag": "0017_short_psynapse",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1794904028814,
+      "tag": "0018_overconfident_vulcan",
+      "breakpoints": true
     }
   ]
 }

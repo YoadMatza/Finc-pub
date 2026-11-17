@@ -8,6 +8,7 @@ import { HoldingRulesCard } from '../components/HoldingRulesCard';
 import { IncomeKindsCard } from '../components/IncomeKindsCard';
 import { LimitsCard } from '../components/LimitsCard';
 import { LockdownCard } from '../components/LockdownCard';
+import { McpSection } from '../components/McpSection';
 import { PasskeysCard } from '../components/PasskeysCard';
 import { SecurityLogCard } from '../components/SecurityLogCard';
 import { SpendLimitCard } from '../components/SpendLimitCard';
@@ -96,6 +97,7 @@ export function Settings({ onSignOut, thisDevice }: { onSignOut: () => void; thi
           </label>
           <p className="text-xs text-muted mt-1">{t('news_setting_help')}</p>
         </div>
+        <McpSection settings={s} />
         <p className="text-xs text-muted mt-2">finc vault set ai_{s.ai.provider ?? 'openai'} · finc ai dry-run · finc ai run</p>
       </Card>
       <Card title={t('conventions')}>

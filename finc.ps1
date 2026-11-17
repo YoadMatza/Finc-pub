@@ -24,7 +24,9 @@ if ($isRestore -or (-not $env:FINC_HOST -and $args.Count -gt 0 -and $hostOnly -n
 }
 if ($inContainer) {
   # FINC_HOST_DATA_DIR: where the container's /data is on this PC, for commands that print a path to a file they wrote
-  & docker compose -f (Join-Path $PSScriptRoot 'docker-compose.yml') exec -it -e "FINC_HOST_DATA_DIR=$(Join-Path $PSScriptRoot 'data')" worker node apps/worker/dist/cli.js @args
+  # `mcp` (not `mcp token`) is an AI app's MCP server: JSON-RPC on stdin/stdout, so no TTY (-T)
+  $tty = if ($args.Count -ge 1 -and $args[0] -eq 'mcp' -and -not ($args.Count -ge 2 -and $args[1] -eq 'token')) { '-T' } else { '-it' }
+  & docker compose -f (Join-Path $PSScriptRoot 'docker-compose.yml') exec $tty -e "FINC_HOST_DATA_DIR=$(Join-Path $PSScriptRoot 'data')" worker node apps/worker/dist/cli.js @args
   exit $LASTEXITCODE
 }
 if (-not (Test-Path $cli)) {
