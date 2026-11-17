@@ -312,12 +312,12 @@ public class FincVaultPlugin extends Plugin {
   }
 
   /**
-   * Stock insights step 2: open an SEC filing in the system browser, never inside finc. Only
-   * https://www.sec.gov/ links pass (ExternalLinkRules); anything else is rejected with code 'invalid'.
+   * Open an SEC filing (stock insights step 2) or a news article (decision aids C) in the system browser, never inside
+   * finc. Only plain https links pass (ExternalLinkRules.externalUrl); anything else is rejected with code 'invalid'.
    */
   @PluginMethod
   public void openExternal(PluginCall call) {
-    String url = ExternalLinkRules.secUrl(call.getString("url"));
+    String url = ExternalLinkRules.externalUrl(call.getString("url"));
     if (url == null) {
       call.reject("link not allowed", "invalid");
       return;

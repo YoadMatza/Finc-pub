@@ -82,7 +82,10 @@ export function toneDot(tone: NewsHeadline['tone']): { className: string; label:
   }
 }
 
-/** The link only when it is a plain https URL (printable ASCII, no backslash, no user info); otherwise not opened. */
+/**
+ * The link only when it is a plain https URL (printable ASCII, no backslash, no user info, the default port, a host
+ * name with a dot); otherwise not opened. The phone checks the same rule again (ExternalLinkRules.newsUrl).
+ */
 export function newsLink(url: unknown): string | null {
   if (typeof url !== 'string' || url.length > 2048 || !url.startsWith('https://')) return null;
   if (/[^\x21-\x7e]|\\/.test(url)) return null;
@@ -92,6 +95,7 @@ export function newsLink(url: unknown): string | null {
   } catch {
     return null;
   }
-  if (u.protocol !== 'https:' || !u.hostname || u.username !== '' || u.password !== '') return null;
+  if (u.protocol !== 'https:' || !u.hostname || u.username !== '' || u.password !== '' || u.port !== '') return null;
+  if (u.hostname.indexOf('.') <= 0 || u.hostname.endsWith('.')) return null;
   return url;
 }

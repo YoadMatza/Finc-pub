@@ -72,7 +72,7 @@ describe('tone dot and links', () => {
 
   it('only plain https links are opened', () => {
     expect(newsLink('https://example.com/a?b=1')).toBe('https://example.com/a?b=1');
-    for (const u of ['http://example.com/', 'javascript:alert(1)', 'https://user:pw@example.com/', 'https://exa mple.com/', 'https://example.com\\@evil.com', 'https://', 'data:text/html,x', 42, null])
+    for (const u of ['http://example.com/', 'javascript:alert(1)', 'https://user:pw@example.com/', 'https://exa mple.com/', 'https://example.com\\@evil.com', 'https://', 'data:text/html,x', 'https://example.com:8443/x', 'https://localhost/x', 'https://example./x', 42, null])
       expect(newsLink(u)).toBeNull();
   });
 });

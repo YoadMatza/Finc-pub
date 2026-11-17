@@ -45,4 +45,46 @@ public class ExternalLinkRulesTest {
       assertNull(String.valueOf(u), ExternalLinkRules.secUrl(u));
     }
   }
+
+  /** Decision aids C: news articles open in the browser. Mirrors apps/web/src/insightsNews.test.ts (newsLink). */
+  @Test
+  public void newsLinksAreAccepted() {
+    for (String u : new String[] {
+      "https://example.com/a?b=1",
+      "https://news.example.co.il/2026/11/16/story.html#top",
+      "https://finnhub.io/api/news?id=abc123",
+      "https://www.sec.gov/Archives/x.htm",
+    }) {
+      assertEquals(u, u, ExternalLinkRules.newsUrl(u));
+      assertEquals(u, u, ExternalLinkRules.externalUrl(u));
+    }
+  }
+
+  @Test
+  public void badNewsLinksAreRefused() {
+    for (String u : new String[] {
+      null,
+      "",
+      "http://example.com/",
+      "javascript:alert(1)",
+      "data:text/html,x",
+      "intent://example.com/#Intent;scheme=https;end",
+      "file:///sdcard/x",
+      "https://",
+      "https://localhost/x",
+      "https://example./x",
+      "https://user:pw@example.com/",
+      "https://example.com@evil.com/",
+      "https://example.com:8443/x",
+      "https://exa mple.com/",
+      "https://example.com\\@evil.com",
+      "https://example.com/א",
+      "https://example.com/a\nb",
+      "HTTPS://EXAMPLE.COM/",
+      "https://example.com/" + "a".repeat(3000),
+    }) {
+      assertNull(String.valueOf(u), ExternalLinkRules.newsUrl(u));
+      assertNull(String.valueOf(u), ExternalLinkRules.externalUrl(u));
+    }
+  }
 }
