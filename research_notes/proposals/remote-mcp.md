@@ -1,6 +1,6 @@
 # Remote MCP: ChatGPT and the Claude apps, from anywhere, with a passkey
 
-Status: **proposal** (2026-11-17), not built. Builds on [mcp-server.md](mcp-server.md) (local MCP, built and
+Status: **approved** 2026-11-17 with R1 ChatGPT and Claude only, R2 the connection window, R3 1 h access + 30-day rotating refresh, R4 the same ten tools, R5 both apps; being built. Builds on [mcp-server.md](mcp-server.md) (local MCP, built and
 live-checked). Decisions at the end.
 
 ## 1. What and why
