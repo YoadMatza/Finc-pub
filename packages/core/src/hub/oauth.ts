@@ -8,7 +8,7 @@
  * - Access tokens 1 hour; refresh tokens 30 days, rotated on every use; a reused refresh token revokes the grant.
  * - Only SHA-256 hashes of tokens are stored. Tokens never appear in a log or a security event.
  */
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify as cryptoVerify } from 'node:crypto';
 import { getSetting, setSetting } from '../ai/settings.js';
 import type { Db } from '../db/db.js';
 import { MCP_PER_DAY } from './mcp.js';
@@ -32,6 +32,17 @@ export type OAuthApp = 'ChatGPT' | 'Claude';
 
 /** The client metadata document URLs finc will fetch (no other URL is ever fetched). */
 export const CIMD_ALLOWED: Readonly<Record<string, OAuthApp>> = { 'https://chatgpt.com/oauth/client.json': 'ChatGPT' };
+
+/**
+ * Clients that must prove themselves at the token endpoint with a JWT signed by their own key (RFC 7523
+ * private_key_jwt), and the only key list (JWKS) finc fetches for each. ChatGPT publishes one; a stolen refresh token
+ * alone is then useless outside OpenAI's servers.
+ */
+export const CLIENT_JWKS: Readonly<Record<string, string>> = { 'https://chatgpt.com/oauth/client.json': 'https://chatgpt.com/oauth/jwks.json' };
+export const CLIENT_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
+/** an assertion may live at most this long (exp - now) */
+const ASSERTION_MAX_S = 600;
+const SKEW_S = 60;
 
 const REDIRECTS: ReadonlyArray<[RegExp, OAuthApp]> = [
   [/^https:\/\/chatgpt\.com\/connector_platform_oauth_redirect$/, 'ChatGPT'],
@@ -129,6 +140,7 @@ export function acceptClientMetadata(db: Db, url: string, doc: unknown, now: num
   if (!app || !d || d.client_id !== url) return { ok: false, error: 'invalid_client_metadata', description: 'not an accepted client' };
   const r = appForRedirects(d.redirect_uris);
   if (!r || r.app !== app) return { ok: false, error: 'invalid_redirect_uri', description: 'the document lists callbacks finc does not accept' };
+  if (d.jwks_uri !== undefined && d.jwks_uri !== CLIENT_JWKS[url]) return { ok: false, error: 'invalid_client_metadata', description: 'the document names a key list finc does not use' };
   // a public client with PKCE: its preferred method, or one it lists as supported (ChatGPT prefers private_key_jwt and
   // lists "none" too; finc advertises "none" only, so that is what it uses; found live 2026-11-17)
   const auth = d.token_endpoint_auth_method ?? 'none';
@@ -138,6 +150,79 @@ export function acceptClientMetadata(db: Db, url: string, doc: unknown, now: num
     .prepare(`insert into oauth_client (client_id, kind, app, redirect_uris, created_at) values (?, 'cimd', ?, ?, ?) on conflict(client_id) do update set redirect_uris = excluded.redirect_uris`)
     .run(url, app, JSON.stringify(r.uris), iso(now));
   return { ok: true, client: { clientId: url, kind: 'cimd', app, redirectUris: r.uris } };
+}
+
+// --- private_key_jwt (RFC 7523 §2.2, RFC 7521 §4.2)
+
+type Jwk = { kty?: unknown; kid?: unknown; alg?: unknown; use?: unknown; n?: unknown; e?: unknown; crv?: unknown; x?: unknown; y?: unknown };
+
+const b64json = (part: string): Record<string, unknown> | null => {
+  try {
+    const v = JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as unknown;
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
+
+/** jti values already used, until their assertion expires (a replayed assertion is refused). */
+export class SeenJti {
+  private seen = new Map<string, number>();
+  /** true the first time; false for a replay */
+  use(jti: string, expMs: number, now: number): boolean {
+    for (const [k, v] of this.seen) if (v <= now) this.seen.delete(k);
+    if (this.seen.has(jti)) return false;
+    if (this.seen.size > 5000) return false; // fail closed rather than grow without bound
+    this.seen.set(jti, expMs);
+    return true;
+  }
+}
+
+export type AssertionCheck = { ok: true; kid: string } | { ok: false; reason: string; unknownKid?: boolean };
+
+/**
+ * A client assertion: a compact JWS, RS256 or ES256 only, signed by a key in the client's JWKS (matched by kid);
+ * iss = sub = client_id; aud is the token endpoint or the issuer; exp in the future and at most 10 minutes away;
+ * iat/nbf not in the future; a jti never seen before. `unknownKid` tells the caller to refresh the key list once.
+ */
+export function checkClientAssertion(jwt: unknown, x: { clientId: string; audiences: string[]; jwks: unknown; now: number; seen: SeenJti }): AssertionCheck {
+  if (typeof jwt !== 'string' || jwt.length > 8192) return { ok: false, reason: 'malformed' };
+  const parts = jwt.split('.');
+  if (parts.length !== 3 || parts.some((p) => !/^[A-Za-z0-9_-]+$/.test(p))) return { ok: false, reason: 'malformed' };
+  const header = b64json(parts[0]!);
+  const claims = b64json(parts[1]!);
+  if (!header || !claims) return { ok: false, reason: 'malformed' };
+  const alg = header.alg;
+  if (alg !== 'RS256' && alg !== 'ES256') return { ok: false, reason: 'alg' };
+  if (header.crit !== undefined) return { ok: false, reason: 'crit' };
+  const keys = (x.jwks && typeof x.jwks === 'object' && Array.isArray((x.jwks as { keys?: unknown }).keys) ? (x.jwks as { keys: Jwk[] }).keys : []).filter(
+    (k) => k && (k.use === undefined || k.use === 'sig') && (k.alg === undefined || k.alg === alg) && (alg === 'RS256' ? k.kty === 'RSA' : k.kty === 'EC' && k.crv === 'P-256'),
+  );
+  const kid = typeof header.kid === 'string' ? header.kid : undefined;
+  const key = kid !== undefined ? keys.find((k) => k.kid === kid) : keys.length === 1 ? keys[0] : undefined;
+  if (!key) return { ok: false, reason: 'unknown key', unknownKid: true };
+  let valid = false;
+  try {
+    const pub = createPublicKey({ key: (alg === 'RS256' ? { kty: 'RSA', n: key.n, e: key.e } : { kty: 'EC', crv: 'P-256', x: key.x, y: key.y }) as never, format: 'jwk' });
+    const data = Buffer.from(`${parts[0]}.${parts[1]}`);
+    const sig = Buffer.from(parts[2]!, 'base64url');
+    valid = alg === 'RS256' ? cryptoVerify('RSA-SHA256', data, pub, sig) : cryptoVerify('sha256', data, { key: pub, dsaEncoding: 'ieee-p1363' }, sig);
+  } catch {
+    valid = false;
+  }
+  if (!valid) return { ok: false, reason: 'signature' };
+  if (claims.iss !== x.clientId || claims.sub !== x.clientId) return { ok: false, reason: 'iss/sub' };
+  const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!aud.some((a) => typeof a === 'string' && x.audiences.includes(a))) return { ok: false, reason: 'aud' };
+  const now = x.now / 1000;
+  const exp = claims.exp;
+  if (typeof exp !== 'number' || exp <= now - SKEW_S) return { ok: false, reason: 'expired' };
+  if (exp > now + ASSERTION_MAX_S + SKEW_S) return { ok: false, reason: 'exp too far' };
+  if (typeof claims.iat === 'number' && claims.iat > now + SKEW_S) return { ok: false, reason: 'iat in the future' };
+  if (typeof claims.nbf === 'number' && claims.nbf > now + SKEW_S) return { ok: false, reason: 'not yet valid' };
+  if (typeof claims.jti !== 'string' || !claims.jti || claims.jti.length > 200) return { ok: false, reason: 'jti' };
+  if (!x.seen.use(`${x.clientId} ${claims.jti}`, (exp + SKEW_S) * 1000, x.now)) return { ok: false, reason: 'replayed' };
+  return { ok: true, kid: typeof key.kid === 'string' ? key.kid : '' };
 }
 
 // --- PKCE and codes

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { addPasskey, ensureAccount, ingestBatch, openDb, runEngine, type NormalizedRow } from '@finc/core';
 import { describe, expect, it } from 'vitest';
 import type { WorkerState } from '../server.js';
@@ -16,6 +16,16 @@ const EDGE = { 'x-finc-edge': 'public', 'x-forwarded-for': '172.18.0.1', 'x-forw
 const CLAUDE_CB = 'https://claude.ai/api/mcp/auth_callback';
 const CHATGPT_CIMD = 'https://chatgpt.com/oauth/client.json';
 const CHATGPT_CB = 'https://chatgpt.com/connector_platform_oauth_redirect';
+const CHATGPT_JWKS = 'https://chatgpt.com/oauth/jwks.json';
+const CHATGPT_KEY = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const OTHER_KEY = generateKeyPairSync('rsa', { modulusLength: 2048 });
+/** ChatGPT's client assertion (RFC 7523), signed with the test key */
+function assertion(nowMs: number, o: { key?: typeof CHATGPT_KEY.privateKey; jti?: string; aud?: string } = {}): string {
+  const b = (x: unknown) => Buffer.from(JSON.stringify(x)).toString('base64url');
+  const head = b({ alg: 'RS256', typ: 'JWT', kid: 'cimd-test' });
+  const body = b({ iss: CHATGPT_CIMD, sub: CHATGPT_CIMD, aud: o.aud ?? `${BASE}/oauth/token`, iat: Math.floor(nowMs / 1000), exp: Math.floor(nowMs / 1000) + 300, jti: o.jti ?? `j-${Math.random()}` });
+  return `${head}.${body}.${sign('RSA-SHA256', Buffer.from(`${head}.${body}`), o.key ?? CHATGPT_KEY.privateKey).toString('base64url')}`;
+}
 const VERIFIER = 'verifier-'.repeat(6);
 const CHALLENGE = createHash('sha256').update(VERIFIER).digest('base64url');
 const META = { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientInfo': { name: 'test', version: '1' }, 'io.modelcontextprotocol/clientCapabilities': {} };
@@ -44,7 +54,9 @@ function setup() {
   const fetched: string[] = [];
   const oauthFetch = (async (url: string) => {
     fetched.push(String(url));
-    return new Response(JSON.stringify({ client_id: CHATGPT_CIMD, client_name: 'ChatGPT', redirect_uris: [CHATGPT_CB], token_endpoint_auth_method: 'none' }), { status: 200 });
+    if (String(url) === CHATGPT_JWKS) return new Response(JSON.stringify({ keys: [{ ...(CHATGPT_KEY.publicKey.export({ format: 'jwk' }) as object), kid: 'cimd-test', alg: 'RS256', use: 'sig' }] }), { status: 200 });
+    // like ChatGPT's real document (2026-11-17)
+    return new Response(JSON.stringify({ client_id: CHATGPT_CIMD, client_name: 'ChatGPT', redirect_uris: [CHATGPT_CB], token_endpoint_auth_method: 'private_key_jwt', token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'], jwks_uri: CHATGPT_JWKS }), { status: 200 });
   }) as typeof fetch;
   const state = { db, vault: null, scheduler: { config: { times: [], jitterMinutes: 0, timezone: 'UTC', monthsBack: 3 }, isRunning: false, nextRun: () => null }, startedAt: t } as unknown as WorkerState;
   const { app } = createApp(state, { controlToken: TOKEN, webDist: '/nonexistent', webauthn: fakeWebAuthn(), now: () => t, oauthFetch });
@@ -61,7 +73,7 @@ function setup() {
   };
   const json = (path: string, body: unknown, headers: Record<string, string> = {}) => req(path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
   const form = (path: string, fields: Record<string, string>) => req(path, { method: 'POST', headers: { ...EDGE, 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(fields).toString() });
-  return { db, req, json, form, fetched, tick: (ms: number) => (t += ms) };
+  return { db, req, json, form, fetched, tick: (ms: number) => (t += ms), now: () => t };
 }
 
 type Env = ReturnType<typeof setup>;
@@ -121,7 +133,7 @@ describe('remote MCP', () => {
     for (const type of ['text/plain', 'application/x-www-form-urlencoded']) expect((await env.req('/mcp', { method: 'POST', headers: { ...EDGE, 'content-type': type }, body: '' })).status).toBe(401);
     expect(r.headers.get('www-authenticate')).toBe(`Bearer resource_metadata="${BASE}/.well-known/oauth-protected-resource/mcp", scope="finc.read"`);
     expect((await env.req('/.well-known/oauth-protected-resource/mcp', { headers: EDGE })).body).toEqual({ resource: RESOURCE, authorization_servers: [BASE], scopes_supported: ['finc.read'], bearer_methods_supported: ['header'], resource_name: 'finc' });
-    expect((await env.req('/.well-known/oauth-authorization-server', { headers: EDGE })).body).toMatchObject({ issuer: BASE, code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none'], client_id_metadata_document_supported: true, authorization_response_iss_parameter_supported: true });
+    expect((await env.req('/.well-known/oauth-authorization-server', { headers: EDGE })).body).toMatchObject({ issuer: BASE, code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'], client_id_metadata_document_supported: true, authorization_response_iss_parameter_supported: true });
   });
 
   it('Claude end to end: the window, a passkey approval, tokens, then the privacy-checked tools over HTTP', async () => {
@@ -300,6 +312,41 @@ describe('remote MCP', () => {
     const tok = await env.form('/oauth/token', { grant_type: 'authorization_code', code: back.searchParams.get('code')!, redirect_uri: CLAUDE_CB, client_id: reg.body.client_id, code_verifier: VERIFIER, resource: `${OWN}/mcp` });
     expect(tok.status).toBe(200);
     expect((await mcp(env, tok.body.access_token, 'tools/list')).status).toBe(200);
+  });
+
+  it('ChatGPT proves itself at the token endpoint with its own key (private_key_jwt), for codes and refreshes', async () => {
+    const env = setup();
+    await turnOn(env);
+    expect((await env.req('/.well-known/oauth-authorization-server', { headers: EDGE })).body.token_endpoint_auth_methods_supported).toEqual(['none', 'private_key_jwt']);
+    await openWindow(env);
+    const q = new URLSearchParams({ response_type: 'code', client_id: CHATGPT_CIMD, redirect_uri: CHATGPT_CB, code_challenge: CHALLENGE, code_challenge_method: 'S256', resource: RESOURCE, state: 's' });
+    const id = new URL((await env.req(`/oauth/authorize?${q}`, { headers: EDGE })).headers.get('location')!).searchParams.get('req')!;
+    const options = await env.json(`/api/oauth/requests/${id}/options`, {}, EDGE);
+    const code = new URL((await env.json(`/api/oauth/requests/${id}/approve`, { response: { id: 'cred-1', challengeEcho: options.body.challenge } }, EDGE)).body.redirect).searchParams.get('code')!;
+    const base = { grant_type: 'authorization_code', code, redirect_uri: CHATGPT_CB, client_id: CHATGPT_CIMD, code_verifier: VERIFIER, resource: RESOURCE };
+    const ca = (o: Parameters<typeof assertion>[1] = {}) => ({ client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer', client_assertion: assertion(env.now(), o) });
+    // no assertion, another key, another audience: refused before the code is even looked at (so the code survives)
+    expect((await env.form('/oauth/token', base)).status).toBe(401);
+    expect((await env.form('/oauth/token', { ...base, ...ca({ key: OTHER_KEY.privateKey }) })).status).toBe(401);
+    expect((await env.form('/oauth/token', { ...base, ...ca({ aud: 'https://evil.example/token' }) })).status).toBe(401);
+    const good = ca({ jti: 'one' });
+    const tok = await env.form('/oauth/token', { ...base, ...good });
+    expect(tok.status).toBe(200);
+    expect(env.fetched).toContain(CHATGPT_JWKS);
+    // refresh: an assertion is required too, and a replayed one is refused
+    const rbase = { grant_type: 'refresh_token', refresh_token: tok.body.refresh_token, client_id: CHATGPT_CIMD };
+    expect((await env.form('/oauth/token', rbase)).status).toBe(401);
+    expect((await env.form('/oauth/token', { ...rbase, ...good })).status).toBe(401);
+    expect((await env.form('/oauth/token', { ...rbase, ...ca() })).status).toBe(200);
+  });
+
+  it('a public client (Claude) may not send an assertion', async () => {
+    const env = setup();
+    await turnOn(env);
+    await openWindow(env);
+    const { clientId, tokens } = await connectClaude(env);
+    const r = await env.form('/oauth/token', { grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId, client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer', client_assertion: 'a.b.c' });
+    expect(r.status).toBe(401);
   });
 
   it('turning it on is for home only; the window opens from home only', async () => {

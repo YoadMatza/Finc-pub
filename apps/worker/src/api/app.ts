@@ -37,6 +37,10 @@ import {
   MCP_PER_DAY,
   createMcpToken,
   CIMD_ALLOWED,
+  CLIENT_ASSERTION_TYPE,
+  CLIENT_JWKS,
+  SeenJti,
+  checkClientAssertion,
   MCP_REMOTE_URL_SETTING,
   OAUTH_SCOPE,
   OAuthCodes,
@@ -1146,6 +1150,36 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     cimdCache.set(url, { doc, at: now() });
     return doc;
   };
+  /**
+   * A client's key list (JWKS) for private_key_jwt: only the URLs in CLIENT_JWKS, https, no redirects, 5 seconds,
+   * 64 KB, cached an hour. A forced refresh (an unknown kid: the client rotated its key) at most every 5 minutes.
+   */
+  const jwksCache = new Map<string, { doc: unknown; at: number }>();
+  const fetchClientJwks = async (url: string, force: boolean): Promise<unknown> => {
+    if (!Object.values(CLIENT_JWKS).includes(url)) return null;
+    const hit = jwksCache.get(url);
+    const t = now();
+    if (hit && (t - hit.at < 3_600_000) && (!force || t - hit.at < 300_000)) return hit.doc;
+    const res = await oauthFetch(url, { redirect: 'error', signal: AbortSignal.timeout(5000), headers: { accept: 'application/json' } });
+    if (!res.ok) return hit?.doc ?? null;
+    const text = await res.text();
+    if (text.length > 65_536) return hit?.doc ?? null;
+    const doc = JSON.parse(text) as unknown;
+    jwksCache.set(url, { doc, at: t });
+    return doc;
+  };
+  const seenJti = new SeenJti();
+  /** The iss of an assertion, read before verification only to pick the client; it is verified right after. */
+  const assertionIssuer = (jwt: string | undefined): string | undefined => {
+    const part = jwt?.split('.')[1];
+    if (!part || part.length > 4096) return undefined;
+    try {
+      const iss = (JSON.parse(Buffer.from(part, 'base64url').toString('utf8')) as { iss?: unknown }).iss;
+      return typeof iss === 'string' ? iss : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const withParams = (uri: string, params: Record<string, string | null>): string => {
     const u = new URL(uri);
     for (const [k, v] of Object.entries(params)) if (v !== null) u.searchParams.set(k, v);
@@ -1176,7 +1210,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256'],
-      token_endpoint_auth_methods_supported: ['none'],
+      token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'],
+      token_endpoint_auth_signing_alg_values_supported: ['RS256', 'ES256'],
       scopes_supported: [OAUTH_SCOPE],
       client_id_metadata_document_supported: true,
       authorization_response_iss_parameter_supported: true,
@@ -1367,6 +1402,27 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const base = oauthBase()!;
     const resource = form.resource === undefined ? undefined : form.resource.replace(/\/$/, '').toLowerCase() === mcpResource(base).toLowerCase() ? mcpResource(base) : form.resource;
     const t = now();
+    // private_key_jwt (RFC 7523): a client with a key list (ChatGPT) must prove itself with a fresh assertion signed by
+    // its own key, for codes and refreshes alike, so a stolen refresh token is useless elsewhere; a public client (Claude)
+    // must not send one
+    const clientId = form.client_id ?? assertionIssuer(form.client_assertion);
+    const jwksUrl = clientId !== undefined && Object.prototype.hasOwnProperty.call(CLIENT_JWKS, clientId) ? CLIENT_JWKS[clientId] : undefined;
+    if (jwksUrl && clientId) {
+      if (form.client_assertion_type !== CLIENT_ASSERTION_TYPE || !form.client_assertion) {
+        record(c, 'mcp.remote_refused', { step: 'client_auth', reason: 'no assertion' }, { aggregate: true });
+        return fail(401, 'invalid_client', 'this client authenticates with private_key_jwt');
+      }
+      const audiences = [`${base}/oauth/token`, base];
+      let check = checkClientAssertion(form.client_assertion, { clientId, audiences, jwks: await fetchClientJwks(jwksUrl, false).catch(() => null), now: t, seen: seenJti });
+      if (!check.ok && check.unknownKid) check = checkClientAssertion(form.client_assertion, { clientId, audiences, jwks: await fetchClientJwks(jwksUrl, true).catch(() => null), now: t, seen: seenJti });
+      if (!check.ok) {
+        record(c, 'mcp.remote_refused', { step: 'client_auth', reason: check.reason }, { aggregate: true });
+        return fail(401, 'invalid_client', 'the client assertion was refused');
+      }
+      form.client_id = clientId;
+    } else if (form.client_assertion !== undefined || form.client_assertion_type !== undefined) {
+      return fail(401, 'invalid_client', 'this client is public (PKCE, no assertion)');
+    }
     if (form.grant_type === 'authorization_code') {
       const r = oauthCodes.redeem(form.code, { clientId: form.client_id, redirectUri: form.redirect_uri, verifier: form.code_verifier, resource }, t);
       if (!r.ok) {
