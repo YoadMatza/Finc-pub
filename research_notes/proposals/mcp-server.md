@@ -1,6 +1,6 @@
 # MCP server: ask an AI app about your money, without giving it your bank
 
-Status: **approved** 2026-11-17 with M1 local stdio only, M2 `find_transactions` included, M3 off by default; being built.
+Status: **built** 2026-11-17 (M1 local stdio only, M2 `find_transactions` included, M3 off by default). Live check the same day: 19 calls through `finc mcp` against the real data, every answer scanned for the accounts' ids, card endings, bank-side descriptions, emails and 7+ digit numbers: zero found; nothing dropped by the allow-lists; stdout JSON-RPC only. Setup: docs/mcp.md.
 
 ## 1. What and why
 
