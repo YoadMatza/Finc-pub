@@ -275,6 +275,30 @@ describe('remote MCP', () => {
     expect((await mcp(env, after.tokens.access_token, 'tools/list')).status).toBe(401);
   });
 
+  it('its own address (port 443 for ChatGPT): machine endpoints there, the approval page on the hub address', async () => {
+    const env = setup();
+    await turnOn(env);
+    const OWN = 'https://finc-example.duckdns.org';
+    expect((await env.req('/api/settings', { method: 'PATCH', headers: HOME, body: JSON.stringify({ ai: { mcpRemoteUrl: 'https://other.example' } }) })).status).toBe(400);
+    expect((await env.req('/api/settings', { method: 'PATCH', headers: HOME, body: JSON.stringify({ ai: { mcpRemoteUrl: OWN } }) })).status).toBe(200);
+    expect((await env.req('/.well-known/oauth-authorization-server', { headers: EDGE })).body.issuer).toBe(OWN);
+    expect((await env.req('/.well-known/oauth-protected-resource/mcp', { headers: EDGE })).body.resource).toBe(`${OWN}/mcp`);
+    await openWindow(env);
+    const reg = await env.json('/oauth/register', { redirect_uris: [CLAUDE_CB] }, EDGE);
+    const q = new URLSearchParams({ response_type: 'code', client_id: reg.body.client_id, redirect_uri: CLAUDE_CB, code_challenge: CHALLENGE, code_challenge_method: 'S256', resource: `${OWN}/mcp` });
+    const auth = await env.req(`/oauth/authorize?${q}`, { headers: EDGE });
+    const consent = new URL(auth.headers.get('location')!);
+    expect(consent.origin).toBe(BASE); // the hub's :7443 address, where the passkeys work
+    const id = consent.searchParams.get('req')!;
+    const options = await env.json(`/api/oauth/requests/${id}/options`, {}, EDGE);
+    const approve = await env.json(`/api/oauth/requests/${id}/approve`, { response: { id: 'cred-1', challengeEcho: options.body.challenge } }, EDGE);
+    const back = new URL(approve.body.redirect);
+    expect(back.searchParams.get('iss')).toBe(OWN);
+    const tok = await env.form('/oauth/token', { grant_type: 'authorization_code', code: back.searchParams.get('code')!, redirect_uri: CLAUDE_CB, client_id: reg.body.client_id, code_verifier: VERIFIER, resource: `${OWN}/mcp` });
+    expect(tok.status).toBe(200);
+    expect((await mcp(env, tok.body.access_token, 'tools/list')).status).toBe(200);
+  });
+
   it('turning it on is for home only; the window opens from home only', async () => {
     const env = setup();
     expect((await env.req('/api/settings', { method: 'PATCH', headers: { ...HOME, ...EDGE }, body: JSON.stringify({ ai: { mcpRemote: true } }) })).status).toBe(403);

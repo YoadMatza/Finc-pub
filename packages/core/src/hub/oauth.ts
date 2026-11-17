@@ -25,6 +25,8 @@ export const MAX_DCR_CLIENTS = 50;
 
 export const MCP_REMOTE_SETTING = 'mcp.remote.enabled';
 export const MCP_WINDOW_SETTING = 'mcp.remote.windowUntil';
+/** remote MCP's own public origin (e.g. on port 443 for ChatGPT); unset = the hub's public address */
+export const MCP_REMOTE_URL_SETTING = 'mcp.remote.publicUrl';
 
 export type OAuthApp = 'ChatGPT' | 'Claude';
 

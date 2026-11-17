@@ -37,6 +37,7 @@ import {
   MCP_PER_DAY,
   createMcpToken,
   CIMD_ALLOWED,
+  MCP_REMOTE_URL_SETTING,
   OAUTH_SCOPE,
   OAuthCodes,
   REQUEST_TTL_MS,
@@ -1082,9 +1083,13 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
 
   // --- remote MCP (research_notes/proposals/remote-mcp.md): finc as a one-owner OAuth authorization server for ChatGPT
   // and Claude, and /mcp over Streamable HTTP. Everything here answers 404 while "Remote AI apps" is off.
-  /** The issuer: the public address without a trailing slash, or null when none is set. */
+  /**
+   * The issuer: remote MCP's own public address when set (`mcp.remote.publicUrl`, e.g. the standard port 443 that
+   * ChatGPT needs, found live 2026-11-17: it never called finc on :7443), else the hub's public address; no trailing
+   * slash; null when none is set.
+   */
   const oauthBase = (): string | null => {
-    const v = getSetting(state.db, 'ui.publicUrl');
+    const v = getSetting(state.db, MCP_REMOTE_URL_SETTING) ?? getSetting(state.db, 'ui.publicUrl');
     if (!v) return null;
     try {
       const u = new URL(v);
@@ -1248,7 +1253,11 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const id = randomBytes(32).toString('base64url');
     pendingAuth.set(id, { client, redirectUri, state: q.state ?? null, challenge: q.code_challenge!, resource: mcpResource(base), expires: t + REQUEST_TTL_MS, used: false, webauthnChallenge: null, window: windowUntil });
     record(c, 'mcp.remote_request', { app: client.app });
-    return c.redirect(`${base}/connect?req=${id}`, 302);
+    // the approval page lives on the hub's own address, where the passkeys work; remote MCP's address (e.g. :443
+    // through another proxy) only carries the machine endpoints
+    const hub = getSetting(state.db, 'ui.publicUrl');
+    const consentBase = hub ? new URL(hub).origin : base;
+    return c.redirect(`${consentBase}/connect?req=${id}`, 302);
   });
 
   /** The pending request for the consent page, or an error code the page explains. */
@@ -1298,7 +1307,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       const v = await webauthn.verifyAuthenticationResponse({
         response: body.data.response as unknown as AuthenticationResponseJSON,
         expectedChallenge: expected,
-        expectedOrigin: rp.origin,
+        // the consent page may be on remote MCP's own address (same host, another port): its origin counts too
+        expectedOrigin: [...new Set([rp.origin, oauthBase() ?? rp.origin])],
         expectedRPID: rp.rpId,
         credential: { id: pk.credentialId, publicKey: new Uint8Array(Buffer.from(pk.publicKey, 'base64url')), counter: pk.counter, transports: pk.transports },
         requireUserVerification: true,
@@ -2007,6 +2017,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         mcp: mcpEnabled(state.db),
         // remote MCP: ChatGPT and Claude through OAuth with a passkey (off by default)
         mcpRemote: mcpRemoteEnabled(state.db),
+        mcpRemoteUrl: getSetting(state.db, MCP_REMOTE_URL_SETTING),
         chatModels: ai.provider === 'openai' || ai.provider === 'anthropic' ? CHAT_MODELS[ai.provider] : null,
       },
       schedule: state.scheduler.config,
@@ -2168,6 +2179,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
             // MCP: on only from home (not a passkey); off from anywhere
             mcp: z.boolean().optional(),
             mcpRemote: z.boolean().optional(),
+            // remote MCP's own public address (https, same host as publicUrl, no path), null = the hub's address
+            mcpRemoteUrl: z.string().url().max(200).nullable().optional(),
           })
           .optional(),
         // P1-09: days a paired device may go unused before its token is revoked; 0 = never
@@ -2291,6 +2304,20 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
           if (body.ai.mcp) requireTrusted(c);
           setMcpEnabled(state.db, body.ai.mcp);
           changed.push('ai.mcp');
+        }
+        if (body.ai.mcpRemoteUrl !== undefined) {
+          requireTrusted(c);
+          const v = body.ai.mcpRemoteUrl;
+          if (v !== null) {
+            const u = new URL(v);
+            const hub = getSetting(state.db, 'ui.publicUrl');
+            if (u.protocol !== 'https:' || (u.pathname !== '/' && u.pathname !== '') || u.search || u.hash || u.username) throw new HTTPException(400, { message: 'mcpRemoteUrl: an https origin, like https://host or https://host:443' });
+            if (!hub || new URL(hub).hostname !== u.hostname) throw new HTTPException(400, { message: 'mcpRemoteUrl must be on the same host as the public address (the passkeys are bound to it)' });
+          }
+          setSetting(state.db, MCP_REMOTE_URL_SETTING, v === null ? null : new URL(v).origin);
+          // a new issuer: connections made under the old one would not validate; start clean
+          revokeAllGrants(state.db, now());
+          changed.push('ai.mcpRemoteUrl');
         }
         if (body.ai.mcpRemote !== undefined) {
           if (body.ai.mcpRemote) requireTrusted(c);
