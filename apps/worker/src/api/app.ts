@@ -447,6 +447,10 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     try {
       mcpTokens = revokeAllMcpTokens(state.db) + revokeAllGrants(state.db, now());
       closeConnectWindow(state.db);
+      // codes and requests still in flight die too, and remote MCP is off until turned on again at home (review 2026-11-17)
+      setMcpRemoteEnabled(state.db, false);
+      oauthCodes.clear();
+      pendingAuth.clear();
     } catch (e) {
       log.warn({ err: e instanceof Error ? e.message : String(e) }, 'lockdown: revoking MCP tokens failed');
     }
@@ -1092,19 +1096,32 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   const mcpResource = (base: string): string => `${base}/mcp`;
   const remoteOff = (c: Context): Response | null => (mcpRemoteEnabled(state.db) && oauthBase() ? null : c.json({ error: 'not found' }, 404));
   const oauthErr = (c: Context, status: 400 | 401 | 403 | 429, error: string, description: string): Response => c.json({ error, error_description: description }, status, { 'Cache-Control': 'no-store' });
-  /** A global budget for the OAuth endpoints: Docker Desktop hides callers' addresses, so it cannot be per address. */
-  const oauthBudget = { start: 0, n: 0 };
-  const oauthLimited = (): boolean => {
-    const t = now();
-    if (t - oauthBudget.start > 60_000) {
-      oauthBudget.start = t;
-      oauthBudget.n = 0;
-    }
-    return ++oauthBudget.n > 60;
+  /**
+   * A global budget of FAILED OAuth requests a minute: Docker Desktop hides callers' addresses, so it cannot be per
+   * address, and (like P0-03) only failures count, so junk from the internet never refuses a valid refresh or code.
+   */
+  const budget = () => {
+    const b = { start: 0, n: 0 };
+    const cur = () => {
+      const t = now();
+      if (t - b.start > 60_000) {
+        b.start = t;
+        b.n = 0;
+      }
+      return b;
+    };
+    return { limited: () => cur().n >= 60, failed: () => void cur().n++ };
   };
+  // two budgets: failed token requests cannot hold up a new connection, and refusals outside the window cost nothing
+  const tokenBudget = budget();
+  const connectBudget = budget();
+  const oauthLimited = connectBudget.limited;
+  const oauthFailed = connectBudget.failed;
   const oauthCodes = new OAuthCodes();
   /** Authorization requests waiting for the owner's passkey, in memory (10 minutes, at most 20). */
-  type PendingAuth = { client: OAuthClient; redirectUri: string; state: string | null; challenge: string; resource: string; expires: number; used: boolean; webauthnChallenge: string | null };
+  type PendingAuth = { client: OAuthClient; redirectUri: string; state: string | null; challenge: string; resource: string; expires: number; used: boolean; webauthnChallenge: string | null; window: string };
+  /** at most this many requests per connection window: the owner's app needs one */
+  const PENDING_PER_WINDOW = 3;
   const pendingAuth = new Map<string, PendingAuth>();
   const cimdCache = new Map<string, { doc: unknown; at: number }>();
   const oauthFetch = opts.oauthFetch ?? fetch;
@@ -1170,6 +1187,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const body = await c.req.json().catch(() => null);
     const r = registerOAuthClient(state.db, body, now());
     if (!r.ok) {
+      oauthFailed();
       record(c, 'mcp.remote_refused', { step: 'register', reason: r.error }, { aggregate: true });
       return oauthErr(c, 400, r.error, r.description);
     }
@@ -1187,6 +1205,13 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     if (off) return off;
     if (oauthLimited()) return c.text('too many requests; try again in a minute', 429);
     const base = oauthBase()!;
+    // design §4.1: no request may even start outside the owner's window (review 2026-11-17: requests prepared in
+    // advance could be phished during a later window, and could fill the slots)
+    const windowUntil = connectWindowUntil(state.db, now());
+    if (!windowUntil) {
+      record(c, 'mcp.remote_refused', { step: 'authorize', reason: 'window_closed' }, { aggregate: true });
+      return c.text("finc is not accepting a new connection now. Open 'Connect an app' in finc's Settings at home, then add finc again in the app.", 400);
+    }
     const q = c.req.query();
     const clientId = q.client_id ?? '';
     let client: OAuthClient | null = null;
@@ -1202,6 +1227,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const redirectUri = q.redirect_uri ?? '';
     // never redirect to an address finc has not checked: an unknown client or callback gets a plain page
     if (!client || !client.redirectUris.includes(redirectUri) || !appForRedirect(redirectUri)) {
+      oauthFailed();
       record(c, 'mcp.remote_refused', { step: 'authorize', reason: client ? 'redirect_uri' : 'client' }, { aggregate: true });
       return c.text('finc does not know this app or its return address. Only ChatGPT and Claude can connect.', 400);
     }
@@ -1214,10 +1240,13 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     if (scopes.some((x) => x !== OAUTH_SCOPE && x !== 'offline_access')) return back('invalid_scope', `the only scope is ${OAUTH_SCOPE}`);
     if (q.state !== undefined && q.state.length > 500) return back('invalid_request', 'state is too long');
     const t = now();
-    for (const [k, v] of pendingAuth) if (v.expires <= t || v.used) pendingAuth.delete(k);
-    if (pendingAuth.size >= 20) return back('temporarily_unavailable', 'too many open requests');
+    for (const [k, v] of pendingAuth) if (v.expires <= t || v.used || v.window !== windowUntil) pendingAuth.delete(k);
+    if (pendingAuth.size >= PENDING_PER_WINDOW) {
+      oauthFailed();
+      return back('temporarily_unavailable', "too many requests in this window; close it in finc's Settings and open a new one");
+    }
     const id = randomBytes(32).toString('base64url');
-    pendingAuth.set(id, { client, redirectUri, state: q.state ?? null, challenge: q.code_challenge!, resource: mcpResource(base), expires: t + REQUEST_TTL_MS, used: false, webauthnChallenge: null });
+    pendingAuth.set(id, { client, redirectUri, state: q.state ?? null, challenge: q.code_challenge!, resource: mcpResource(base), expires: t + REQUEST_TTL_MS, used: false, webauthnChallenge: null, window: windowUntil });
     record(c, 'mcp.remote_request', { app: client.app });
     return c.redirect(`${base}/connect?req=${id}`, 302);
   });
@@ -1229,7 +1258,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     if (p.used) return { ok: false, status: 410, code: 'used' };
     if (p.expires <= now()) return { ok: false, status: 410, code: 'expired' };
     if (!mcpRemoteEnabled(state.db)) return { ok: false, status: 404, code: 'not_found' };
-    if (!connectWindowUntil(state.db, now())) return { ok: false, status: 409, code: 'window_closed' };
+    const open = connectWindowUntil(state.db, now());
+    if (!open || open !== p.window) return { ok: false, status: 409, code: 'window_closed' };
     return { ok: true, p };
   };
   const pendingError = (c: Context, r: { status: 404 | 409 | 410; code: string }) =>
@@ -1282,6 +1312,11 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     // re-check after the slow verification: a panic, the switch, the window or another approval may have happened
     const again = pendingFor(id);
     if (lockedDownSince(gen) || !again.ok) return again.ok ? c.json({ error: 'finc was locked down meanwhile' }, 409) : pendingError(c, again);
+    const others = [...pendingAuth.values()].filter((x) => x !== p && !x.used && x.expires > now() && x.window === p.window).length;
+    if (others > 0) {
+      record(c, 'mcp.remote_refused', { step: 'approve', reason: 'ambiguous' });
+      return c.json({ error: "More than one app asked to connect in this window, so finc approves none. Close the window in Settings, open a new one, and add finc again in your app only.", code: 'ambiguous' }, 409);
+    }
     touchPasskey(state.db, pk.id, newCounter);
     p.used = true;
     closeConnectWindow(state.db); // one approval per window
@@ -1302,12 +1337,19 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   app.post('/oauth/token', async (c) => {
     const off = remoteOff(c);
     if (off) return off;
-    if (oauthLimited()) return oauthErr(c, 429, 'temporarily_unavailable', 'too many requests; try again in a minute');
     const type = c.req.header('content-type') ?? '';
     const form: Record<string, string> = {};
     if (type.includes('application/x-www-form-urlencoded')) for (const [k, v] of new URLSearchParams(await c.req.text())) form[k] = v;
-    else if (type.includes('application/json')) Object.assign(form, (await c.req.json().catch(() => ({}))) as Record<string, string>);
-    if (form.client_secret !== undefined) return oauthErr(c, 401, 'invalid_client', 'finc clients are public (no secret)');
+    else if (type.includes('application/json')) {
+      const j = (await c.req.json().catch(() => null)) as unknown;
+      if (j && typeof j === 'object' && !Array.isArray(j)) for (const [k, v] of Object.entries(j as Record<string, unknown>)) if (typeof v === 'string') form[k] = v;
+    }
+    // a failure past the budget waits; a valid code or refresh token always goes through (P0-03)
+    const fail = (status: 400 | 401, error: string, description: string): Response => {
+      tokenBudget.failed();
+      return tokenBudget.limited() ? oauthErr(c, 429, 'temporarily_unavailable', 'too many failed requests; try again in a minute') : oauthErr(c, status, error, description);
+    };
+    if (form.client_secret !== undefined) return fail(401, 'invalid_client', 'finc clients are public (no secret)');
     const base = oauthBase()!;
     const resource = form.resource === undefined ? undefined : form.resource.replace(/\/$/, '').toLowerCase() === mcpResource(base).toLowerCase() ? mcpResource(base) : form.resource;
     const t = now();
@@ -1315,7 +1357,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       const r = oauthCodes.redeem(form.code, { clientId: form.client_id, redirectUri: form.redirect_uri, verifier: form.code_verifier, resource }, t);
       if (!r.ok) {
         record(c, 'mcp.remote_refused', { step: 'token', reason: r.description }, { aggregate: true });
-        return oauthErr(c, 400, r.error, r.description);
+        return fail(400, r.error, r.description);
       }
       const g = createGrant(state.db, r.grant, t);
       record(c, 'mcp.remote_token', { app: r.grant.app, grant: g.grantId, kind: 'first' });
@@ -1326,11 +1368,11 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       if (!r.ok) {
         if (r.reused) securityAlert(state.db, state.vault, 'an AI app connection was revoked: one of its refresh tokens was used twice (possible theft)', { kind: 'mcp.remote_refresh_reuse', actor: 'oauth', address: clientAddress(c), detail: { grant: r.reused.grantId }, at: t });
         else record(c, 'mcp.remote_refused', { step: 'refresh', reason: r.description }, { aggregate: true });
-        return oauthErr(c, 400, r.error, r.description);
+        return fail(400, r.error, r.description);
       }
       return c.json(r.tokens, 200, { 'Cache-Control': 'no-store', Pragma: 'no-cache' });
     }
-    return oauthErr(c, 400, 'unsupported_grant_type', 'authorization_code or refresh_token');
+    return fail(400, 'unsupported_grant_type', 'authorization_code or refresh_token');
   });
 
   // /mcp over Streamable HTTP: an access token for this resource, the privacy-checked tools, JSON answers only
@@ -2253,7 +2295,11 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         if (body.ai.mcpRemote !== undefined) {
           if (body.ai.mcpRemote) requireTrusted(c);
           setMcpRemoteEnabled(state.db, body.ai.mcpRemote);
-          if (!body.ai.mcpRemote) closeConnectWindow(state.db);
+          if (!body.ai.mcpRemote) {
+            // off means off: no grant survives to come back when it is turned on again (review 2026-11-17)
+            closeConnectWindow(state.db);
+            revokeAllGrants(state.db, now());
+          }
           changed.push('ai.mcpRemote');
         }
       }

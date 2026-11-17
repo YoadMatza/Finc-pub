@@ -166,6 +166,11 @@ export class OAuthCodes {
     return code;
   }
 
+  /** Forgets every code (the panic button). */
+  clear(): void {
+    this.codes.clear();
+  }
+
   /** Redeems a code once (it is gone after the first attempt, right or wrong). */
   redeem(code: unknown, x: { clientId: unknown; redirectUri: unknown; verifier: unknown; resource: unknown }, now: number): { ok: true; grant: CodeGrant } | { ok: false; error: 'invalid_grant'; description: string } {
     if (typeof code !== 'string' || code.length > 200) return { ok: false, error: 'invalid_grant', description: 'unknown code' };

@@ -226,6 +226,55 @@ describe('remote MCP', () => {
     expect(log).not.toContain('finc_rt_');
   });
 
+  it('review 2026-11-17: no request starts outside the window, and a window with two requests approves none', async () => {
+    const env = setup();
+    await turnOn(env);
+    const q = new URLSearchParams({ response_type: 'code', client_id: CHATGPT_CIMD, redirect_uri: CHATGPT_CB, code_challenge: CHALLENGE, code_challenge_method: 'S256', resource: RESOURCE });
+    // prepared in advance (window shut): refused, nothing pending, nothing fetched
+    expect((await env.req(`/oauth/authorize?${q}`, { headers: EDGE })).status).toBe(400);
+    expect(env.fetched).toEqual([]);
+    await openWindow(env);
+    const a = await env.req(`/oauth/authorize?${q}`, { headers: EDGE }); // someone else's
+    const b = await env.req(`/oauth/authorize?${q}`, { headers: EDGE }); // the owner's
+    const id = new URL(b.headers.get('location')!).searchParams.get('req')!;
+    expect(a.status).toBe(302);
+    const options = await env.json(`/api/oauth/requests/${id}/options`, {}, EDGE);
+    const r = await env.json(`/api/oauth/requests/${id}/approve`, { response: { id: 'cred-1', challengeEcho: options.body.challenge } }, EDGE);
+    expect(r.status).toBe(409);
+    expect(r.body.code).toBe('ambiguous');
+    // at most three per window
+    await env.req(`/oauth/authorize?${q}`, { headers: EDGE });
+    const fourth = await env.req(`/oauth/authorize?${q}`, { headers: EDGE });
+    expect(new URL(fourth.headers.get('location')!).searchParams.get('error')).toBe('temporarily_unavailable');
+    // a request from an earlier window is dead in a new one
+    env.tick(1000);
+    await openWindow(env);
+    expect((await env.req(`/api/oauth/requests/${id}`, { headers: EDGE })).body.code).toBe('window_closed');
+  });
+
+  it('review 2026-11-17: junk cannot lock out a valid refresh; bad JSON types are a 400; off and panic end everything', async () => {
+    const env = setup();
+    await turnOn(env);
+    await openWindow(env);
+    const { clientId, tokens } = await connectClaude(env);
+    for (let i = 0; i < 80; i++) await env.form('/oauth/token', { grant_type: 'refresh_token', refresh_token: 'finc_rt_junk', client_id: 'x' });
+    expect((await env.form('/oauth/token', { grant_type: 'refresh_token', refresh_token: 'finc_rt_junk', client_id: 'x' })).status).toBe(429);
+    const ok = await env.form('/oauth/token', { grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId, resource: RESOURCE });
+    expect(ok.status).toBe(200);
+    expect((await env.json('/oauth/token', { grant_type: 'refresh_token', resource: 1, refresh_token: ['x'] }, EDGE)).status).toBeLessThan(500);
+    // turning it off revokes the connection; turning it on again does not bring it back
+    await env.req('/api/settings', { method: 'PATCH', headers: HOME, body: JSON.stringify({ ai: { mcpRemote: false } }) });
+    await turnOn(env);
+    expect((await mcp(env, ok.body.access_token, 'tools/list')).status).toBe(401);
+    // panic: a fresh connection and a code still in flight are both dead, and remote is off
+    await openWindow(env);
+    const after = await connectClaude(env, 'st-p');
+    expect((await env.req('/api/panic', { method: 'POST', headers: HOME, body: JSON.stringify({ confirm: 'LOCK' }) })).status).toBeLessThan(500);
+    expect((await env.req('/api/settings', { headers: HOME })).body.ai.mcpRemote).toBe(false);
+    await turnOn(env);
+    expect((await mcp(env, after.tokens.access_token, 'tools/list')).status).toBe(401);
+  });
+
   it('turning it on is for home only; the window opens from home only', async () => {
     const env = setup();
     expect((await env.req('/api/settings', { method: 'PATCH', headers: { ...HOME, ...EDGE }, body: JSON.stringify({ ai: { mcpRemote: true } }) })).status).toBe(403);

@@ -1,6 +1,6 @@
 # Remote MCP: ChatGPT and the Claude apps, from anywhere, with a passkey
 
-Status: **approved** 2026-11-17 with R1 ChatGPT and Claude only, R2 the connection window, R3 1 h access + 30-day rotating refresh, R4 the same ten tools, R5 both apps; being built. Builds on [mcp-server.md](mcp-server.md) (local MCP, built and
+Status: **approved** 2026-11-17 with R1 ChatGPT and Claude only, R2 the connection window, R3 1 h access + 30-day rotating refresh, R4 the same ten tools, R5 both apps. **Built** 2026-11-17 (`dccac33`, `d6d6937`); an independent security review found 2 medium and 2 low issues, all fixed the same day (authorize only inside the window, requests tied to their window and at most 3, approval refused when a window holds two; OAuth budgets count failures only and are split; panic clears codes and requests and turns remote off; turning it off revokes every connection; JSON token bodies take strings only). Step 1's spike and step 8's live test wait for Yoad to connect ChatGPT and Claude. Builds on [mcp-server.md](mcp-server.md) (local MCP, built and
 live-checked). Decisions at the end.
 
 ## 1. What and why
