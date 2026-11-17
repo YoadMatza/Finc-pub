@@ -2,20 +2,29 @@ import { useState } from 'react';
 import { ApiError, api } from '../api';
 import { useI18n } from '../i18n';
 import { onRpHost, passkeyFailure, passkeysSupported, signInWithPasskey } from '../passkey';
+import { codeKind, signInWithTotp, totpLoginError } from '../totp';
 import type { PasskeysInfo } from '../types';
 
-export function Login({ pinSet, trusted = true, passkeys, onDone }: { pinSet: boolean; trusted?: boolean; passkeys?: PasskeysInfo | null; onDone: () => void }) {
-  const { t, lang, setLang } = useI18n();
+export function Login({ pinSet, trusted = true, passkeys, totp = false, onDone }: { pinSet: boolean; trusted?: boolean; passkeys?: PasskeysInfo | null; totp?: boolean; onDone: () => void }) {
+  const { t, lang, setLang, locale } = useI18n();
   const [pin, setPin] = useState('');
   const [again, setAgain] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pkMsg, setPkMsg] = useState<{ text: string; calm: boolean } | null>(null);
   const [pkBusy, setPkBusy] = useState(false);
+  // the backup login (PIN + authenticator code): only away from home, where the plain PIN does not work
+  const [totpOpen, setTotpOpen] = useState(false);
+  const [totpPin, setTotpPin] = useState('');
+  const [totpCode, setTotpCode] = useState('');
+  const [totpErr, setTotpErr] = useState<string | null>(null);
+  const [totpBusy, setTotpBusy] = useState(false);
 
   // a passkey only works on the public host it was made for, in a browser that speaks WebAuthn
   const canPasskey = pinSet && !!passkeys?.available && onRpHost(passkeys.rpId) && passkeysSupported();
   // on the public address with no passkey yet: say how to get one, so the missing button is not a mystery
+  const canTotp = pinSet && !trusted && totp;
+  const totpShown = canTotp && totpOpen;
   const noPasskeyYet = pinSet && !trusted && !!passkeys && !passkeys.available && onRpHost(passkeys.rpId) && passkeysSupported();
 
   async function submit(e: React.FormEvent) {
@@ -30,6 +39,22 @@ export function Login({ pinSet, trusted = true, passkeys, onDone }: { pinSet: bo
       setErr(e instanceof ApiError ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function totpSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setTotpErr(null);
+    if (!codeKind(totpCode)) return setTotpErr(t('totp_code_bad'));
+    setTotpBusy(true);
+    try {
+      await signInWithTotp(totpPin, totpCode);
+      onDone();
+    } catch (e) {
+      setTotpErr(totpLoginError(e, t, locale));
+      setTotpCode('');
+    } finally {
+      setTotpBusy(false);
     }
   }
 
@@ -56,9 +81,43 @@ export function Login({ pinSet, trusted = true, passkeys, onDone }: { pinSet: bo
     </div>
   );
 
+  // a second way in, below the passkey (still the first, recommended one)
+  const totpBlock = canTotp && (
+    totpShown ? (
+      <div className="flex flex-col gap-3">
+        <div className="font-medium text-sm">{t('totp_sign_in')}</div>
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="text-muted">{t('pin')}</span>
+          <input className="input num text-lg tracking-widest" type="password" inputMode="numeric" autoComplete="current-password" autoFocus value={totpPin} onChange={(e) => setTotpPin(e.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="text-muted">{t('totp_code')}</span>
+          <input className="input num text-lg tracking-widest text-start" type="text" inputMode="text" autoComplete="one-time-code" dir="ltr" spellCheck={false} autoCapitalize="characters" maxLength={14} value={totpCode} onChange={(e) => setTotpCode(e.target.value)} />
+          <span className="text-xs text-muted">{t('totp_code_hint')}</span>
+        </label>
+        {totpErr && <div className="text-neg text-sm">{totpErr}</div>}
+        <div className="flex gap-2">
+          <button className={`btn flex-1 ${canPasskey ? '' : 'btn-primary'}`} disabled={totpBusy || totpPin.length < 4 || !totpCode.trim()}>
+            {t('sign_in')}
+          </button>
+          <button type="button" className="btn" onClick={() => { setTotpOpen(false); setTotpErr(null); setTotpPin(''); setTotpCode(''); }}>
+            {t('totp_back')}
+          </button>
+        </div>
+      </div>
+    ) : (
+      <div className="flex flex-col gap-1">
+        {canPasskey && <div className="text-center text-xs text-muted">{t('totp_or')}</div>}
+        <button type="button" className="btn" onClick={() => setTotpOpen(true)}>
+          {t('totp_sign_in')}
+        </button>
+      </div>
+    )
+  );
+
   return (
     <div className="min-h-full flex items-center justify-center p-6">
-      <form onSubmit={submit} className="card p-6 w-full max-w-sm flex flex-col gap-4">
+      <form onSubmit={totpShown ? totpSubmit : submit} className="card p-6 w-full max-w-sm flex flex-col gap-4">
         <div className="flex items-center gap-3">
           <img src="/icon.svg" alt="" className="h-10 w-10 rounded-xl" />
           <div>
@@ -66,8 +125,9 @@ export function Login({ pinSet, trusted = true, passkeys, onDone }: { pinSet: bo
             <p className="text-muted text-sm">{pinSet ? t('pin_login_help') : t('pin_setup_help')}</p>
           </div>
         </div>
-        {passkeyBlock}
-        {canPasskey && !trusted ? null : (
+        {!totpShown && passkeyBlock}
+        {totpBlock}
+        {(canPasskey && !trusted) || totpShown ? null : (
           <>
             {canPasskey && <div className="text-center text-xs text-muted">{t('pk_or_pin')}</div>}
             <label className="flex flex-col gap-1 text-sm">

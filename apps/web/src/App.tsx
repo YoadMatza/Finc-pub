@@ -40,6 +40,8 @@ interface AuthStatus {
   deviceStatus?: 'ok' | 'revoked' | 'unknown';
   /** Passkey sign-in: set up (public address + at least one passkey) and the host it is bound to. Absent from older workers. */
   passkeys?: PasskeysInfo;
+  /** The backup login (PIN + authenticator code) is on. Absent from older workers: off. */
+  totp?: boolean;
 }
 
 /**
@@ -206,6 +208,7 @@ function Authed({ onUnpair, onRevoked }: { onUnpair: () => void; onRevoked: () =
         pinSet={auth.data.pinSet}
         trusted={auth.data.trusted}
         passkeys={auth.data.passkeys ?? null}
+        totp={auth.data.totp === true}
         onDone={() => {
           qc.clear();
           void auth.refetch();

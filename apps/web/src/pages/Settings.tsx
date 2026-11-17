@@ -13,6 +13,7 @@ import { McpSection } from '../components/McpSection';
 import { PasskeysCard } from '../components/PasskeysCard';
 import { SecurityLogCard } from '../components/SecurityLogCard';
 import { SpendLimitCard } from '../components/SpendLimitCard';
+import { TotpCard } from '../components/TotpCard';
 import { Card, Chip, Empty, ErrorBox, Row, Spinner } from '../components/ui';
 import { IDLE_DAYS_MAX, parseIdleDays, revokedLabel } from '../devicePolicy';
 import { relTime } from '../format';
@@ -52,6 +53,7 @@ export function Settings({ onSignOut, thisDevice }: { onSignOut: () => void; thi
       <HoldingRulesCard />
       <PhoneAccess settings={s} thisDevice={thisDevice ?? null} onUnpair={() => logout.mutate()} />
       <PasskeysCard trusted={s.trusted} />
+      <TotpCard />
       <LockdownCard settings={s} />
       <LimitsCard settings={s} />
       <SecurityLogCard trusted={s.trusted} />

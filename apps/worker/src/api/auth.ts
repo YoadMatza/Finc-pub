@@ -27,6 +27,8 @@ export interface SessionEntry {
   passkeyId?: number;
   /** hard end (ms since epoch); set for passkey sessions */
   expiresAt?: number;
+  /** opened by the backup login (PIN + authenticator code, totp-backup-login.md): a passkey-kind session without a passkey */
+  totp?: boolean;
 }
 
 /** Where sessions outlive the process: keyed by the SHA-256 of the cookie, never the cookie itself. */
@@ -64,6 +66,14 @@ export class Sessions {
     const t = this.now();
     const expiresAt = t + PASSKEY_SESSION_MS;
     const token = this.open({ createdAt: t, lastSeen: t, agent: agent.slice(0, 120), pin: pinStamp, kind: 'passkey', passkeyId, expiresAt });
+    return { token, expiresAt };
+  }
+
+  /** A backup-login session (PIN + authenticator code): exactly a passkey session's limits, 12 hours, never admin. */
+  createBackup(agent: string, pinStamp: string): { token: string; expiresAt: number } {
+    const t = this.now();
+    const expiresAt = t + PASSKEY_SESSION_MS;
+    const token = this.open({ createdAt: t, lastSeen: t, agent: agent.slice(0, 120), pin: pinStamp, kind: 'passkey', totp: true, expiresAt });
     return { token, expiresAt };
   }
 

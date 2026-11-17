@@ -205,6 +205,12 @@ passkey sign-in. Changing the PIN or removing the passkey in Settings ends its s
 site "Dangerous" (a Google Safe Browsing false positive for DuckDNS names), it also refuses the passkey until the
 warning is dismissed.
 
+**Backup login** (PIN + authenticator code, for a browser without passkeys): set it up once at home in Settings →
+Security → Backup login (scan the QR code with Google Authenticator or any authenticator app, confirm one code, save the
+8 recovery codes). Away from home the sign-in page then also offers *PIN + authenticator code*: the session has a
+passkey session's limits (12 hours, never admin), a code works once, 5 wrong tries lock it (15 minutes, doubling), and
+every backup login is announced on Telegram and the phone app. "Lock everything" turns it off.
+
 The manual fallback still works: at home, Settings → Phone access → Pair a phone makes a code (5 minutes, single use);
 in the other browser open `https://finc-example.duckdns.org:7443/pair?code=<code>` and press "Pair this browser". That
 browser is then a paired device, listed in Settings and revocable there. Sign out in Settings forgets it.

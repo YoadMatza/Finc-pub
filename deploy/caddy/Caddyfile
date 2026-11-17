@@ -86,7 +86,7 @@
 	# they carry.
 	# MCP: the local bridge's routes (/mcp/tools, /mcp/call) never face the internet. Remote MCP (remote-mcp.md) answers
 	# on /mcp itself, /oauth/* and /.well-known/oauth-*, and the worker keeps those 404 until it is turned on.
-	@private path /api/auth/login /api/auth/setup /api/devices/pairings /api/auth/passkey/enroll-code /health /whoami /runs /unlock /sync /lock /mcp/*
+	@private path /api/auth/login /api/auth/setup /api/devices/pairings /api/auth/passkey/enroll-code /api/auth/totp/setup /api/auth/totp/confirm /health /whoami /runs /unlock /sync /lock /mcp/*
 	handle @private {
 		respond 404
 	}

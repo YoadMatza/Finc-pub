@@ -797,6 +797,29 @@ export interface PasskeysInfo {
   rpId: string | null;
 }
 
+/** GET /api/auth/totp: the backup login (PIN + authenticator code, totp-backup-login.md). */
+export interface TotpInfo {
+  enabled: boolean;
+  /** unused recovery codes; null when off */
+  recoveryLeft: number | null;
+  /** ISO time it was turned on; null when off */
+  enabledAt: string | null;
+  /** at home and not a passkey or backup session: may set up or turn off */
+  canEdit: boolean;
+}
+
+/** POST /api/auth/totp/setup: a new secret, not on until confirmed (10 minutes). */
+export interface TotpSetup {
+  secret: string;
+  /** otpauth://totp/… for the QR code */
+  uri: string;
+}
+
+/** POST /api/auth/totp/confirm: it is on; the recovery codes are shown this once. */
+export interface TotpConfirmed {
+  recoveryCodes: string[];
+}
+
 export interface Passkey {
   id: number | string;
   name: string;

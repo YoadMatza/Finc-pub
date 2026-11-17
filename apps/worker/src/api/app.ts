@@ -37,6 +37,13 @@ import {
   MCP_PER_DAY,
   createMcpToken,
   CIMD_ALLOWED,
+  disableTotp,
+  enableTotp,
+  newTotpSecret,
+  totpEnabled,
+  totpEnabledAt,
+  totpRecoveryLeft,
+  useTotpCode,
   pushTargets,
   deviceForPushSecret,
   issuePushSecret,
@@ -467,6 +474,9 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       setMcpRemoteEnabled(state.db, false);
       oauthCodes.clear();
       pendingAuth.clear();
+      // the backup login too: turning it on again is home only, with a new secret (totp-backup-login.md)
+      disableTotp(state.db);
+      totpSetup = null;
     } catch (e) {
       log.warn({ err: e instanceof Error ? e.message : String(e) }, 'lockdown: revoking MCP tokens failed');
     }
@@ -701,6 +711,12 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     // A passkey session is the exception: a fixed 12-hour lifetime, opened by a WebAuthn signature that is bound to
     // the public origin, so it counts from the internet too (it is still tied to the PIN and to its passkey).
     const s = sessions.check(getCookie(c, COOKIE), pinStamp(state.db));
+    if (s?.kind === 'passkey' && s.totp) {
+      // the backup login (PIN + authenticator code): the same limits as a passkey session, and it ends when it is off
+      if (!totpEnabled(state.db)) return 'none';
+      recordUse(c, 'passkey.used', 'totp', 'backup login');
+      return 'passkey';
+    }
     if (s?.kind === 'passkey') {
       // the passkey must still be active: removing it ends its sessions at once, even one opened in the same moment
       const pk = s.passkeyId === undefined ? undefined : (state.db.$client.prepare('select revoked_at, name from passkey where id = ?').get(s.passkeyId) as { revoked_at: string | null; name: string } | undefined);
@@ -857,7 +873,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const deviceStatus = isDeviceToken(bearer) ? (d ? 'ok' : deviceTokenStatus(state.db, bearer)) : undefined;
     const rp = passkeyRp(state.db);
     const passkeys = { available: !!rp && activePasskeys(state.db, rp.rpId).length > 0, rpId: rp?.rpId ?? null };
-    return c.json({ pinSet: pinIsSet(state.db), authenticated: via !== 'none', via, trusted: trusted(c), device: d ? { id: d.id, name: d.name } : null, passkeys, ...(deviceStatus ? { deviceStatus } : {}) });
+    return c.json({ pinSet: pinIsSet(state.db), authenticated: via !== 'none', via, trusted: trusted(c), device: d ? { id: d.id, name: d.name } : null, passkeys, totp: totpEnabled(state.db), ...(deviceStatus ? { deviceStatus } : {}) });
   });
   app.post('/api/auth/setup', async (c) => {
     requireTrusted(c);
@@ -874,6 +890,53 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     record(c, 'auth.pin_set');
     return c.json({ ok: true });
   });
+  // --- the backup login from outside: PIN + authenticator code (research_notes/proposals/totp-backup-login.md)
+  /** One shared lock (Docker Desktop hides callers' addresses): 5 free tries, then 15 minutes, doubling up to 24 hours. */
+  const totpLock = { failures: 0, until: 0 };
+  const TOTP_FREE = 5;
+  const totpLockMs = (failures: number) => Math.min(24 * 3_600_000, 15 * 60_000 * 2 ** Math.max(0, failures - TOTP_FREE));
+  let totpSetup: { secret: string; until: number } | null = null;
+  const announce = (text: string) => {
+    // T4: every backup login on the phone app too, when push is set up (the text comes from finc, never through Google)
+    const sender = pushSender(state.vault);
+    if (!sender) return;
+    const q = queuePush(state.db, [{ type: 'security', key: `security:${now()}`, text, urgent: true }], new Date(now()));
+    if (q.devices) void wakeApps(state.db, sender, q.tokens);
+  };
+  app.post('/api/auth/totp/login', async (c) => {
+    const t = now();
+    if (totpLock.until > t) return c.json({ error: `the backup login is locked after wrong tries; try again after ${new Date(totpLock.until).toISOString().slice(11, 16)} UTC`, retryAt: new Date(totpLock.until).toISOString() }, 429);
+    if (!totpEnabled(state.db) || !pinIsSet(state.db)) return c.json({ error: 'the backup login is off' }, 409);
+    const body = z.object({ pin: z.string().max(64), code: z.string().max(20) }).strict().safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: 'PIN and code are needed' }, 400);
+    const gen = lockdownGen;
+    // the PIN first (slow, through the same gate as the PIN sign-in); the code is only spent when the PIN is right
+    const pinOk = await passwordGate.run(() => (opts.verifyPin ?? verifyPin)(state.db, body.data.pin));
+    if (pinOk === BUSY) return c.json({ error: 'another sign-in is being checked; try again in a few seconds' }, 429);
+    const code = pinOk ? useTotpCode(state.db, body.data.code, now()) : { ok: false as const };
+    if (!pinOk || !code.ok) {
+      totpLock.failures++;
+      const locked = totpLock.failures >= TOTP_FREE;
+      if (locked) totpLock.until = now() + totpLockMs(totpLock.failures);
+      record(c, 'auth.totp_failed', { failures: totpLock.failures, ...(locked ? { lockedMin: Math.round((totpLock.until - now()) / 60_000) } : {}) }, { aggregate: true });
+      if (locked) {
+        const text = `${totpLock.failures} wrong backup-login tries; locked for ${Math.round((totpLock.until - now()) / 60_000)} min`;
+        securityAlert(state.db, state.vault, text, ev(c, 'auth.totp_locked', { failures: totpLock.failures }));
+        announce(`🔐 ${text}`);
+      }
+      return c.json({ error: 'wrong PIN or code' }, 401);
+    }
+    if (lockedDownSince(gen) || !totpEnabled(state.db)) return c.json({ error: 'everything was locked meanwhile (lockdown); sign in again' }, 409);
+    totpLock.failures = 0;
+    totpLock.until = 0;
+    const { token, expiresAt } = sessions.createBackup(c.req.header('user-agent') ?? '', pinStamp(state.db)!);
+    setCookie(c, COOKIE, token, { ...cookieOpts(c), maxAge: Math.max(1, Math.floor((expiresAt - now()) / 1000)) });
+    const how = code.via === 'recovery' ? `a recovery code (${code.recoveryLeft} left)` : 'an authenticator code';
+    securityAlert(state.db, state.vault, `signed in to finc with the PIN and ${how} (backup login)`, ev(c, 'auth.totp_ok', { via: code.via, recoveryLeft: code.recoveryLeft }));
+    announce(`🔐 finc: signed in with the PIN and ${how} (backup login)`);
+    return c.json({ ok: true });
+  });
+
   app.post('/api/auth/login', async (c) => {
     requireTrusted(c);
     const key = clientKey(c);
@@ -2042,6 +2105,35 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   });
 
   // --- paired phones
+  // --- the backup login's settings (totp-backup-login.md): seen by anyone signed in, changed at home only
+  api.get('/auth/totp', (c) => c.json({ enabled: totpEnabled(state.db), recoveryLeft: totpRecoveryLeft(state.db), enabledAt: totpEnabledAt(state.db), canEdit: trusted(c) && authOf(c) !== 'passkey' }));
+  api.post('/auth/totp/setup', (c) => {
+    requireTrusted(c);
+    const s = newTotpSecret('owner');
+    totpSetup = { secret: s.secret, until: now() + 10 * 60_000 };
+    return c.json(s);
+  });
+  api.post('/auth/totp/confirm', async (c) => {
+    requireTrusted(c);
+    const body = z.object({ code: z.string().max(12) }).strict().safeParse(await c.req.json().catch(() => null));
+    if (!totpSetup || totpSetup.until <= now()) return c.json({ error: 'the setup expired; start again' }, 410);
+    if (!body.success) return c.json({ error: 'a 6-digit code is needed' }, 400);
+    const r = enableTotp(state.db, totpSetup.secret, body.data.code.trim(), now());
+    if (!r.ok) return c.json({ error: 'that code does not match; check the time on the phone and try the next code' }, 400);
+    totpSetup = null;
+    record(c, 'auth.totp_enabled', null);
+    securityAlert(state.db, state.vault, 'the backup login (PIN + authenticator code) was turned on', null);
+    return c.json({ recoveryCodes: r.recoveryCodes });
+  });
+  api.delete('/auth/totp', (c) => {
+    requireTrusted(c);
+    disableTotp(state.db);
+    totpSetup = null;
+    const ended = sessions.revokeWhere((s) => s.totp === true);
+    record(c, 'auth.totp_disabled', { sessionsEnded: ended });
+    return c.json({ ok: true });
+  });
+
   // --- push alerts (research_notes/proposals/push-alerts.md)
   /** The paired phone asking, or a 403: these routes belong to the app's own device token. */
   const appDevice = (c: Context) => {

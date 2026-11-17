@@ -23,6 +23,8 @@ and versions follow [Semantic Versioning](https://semver.org/) (before 1.0, a mi
 - MCP: a read-only MCP server for AI apps on the PC (`finc mcp`, tokens with `finc mcp token create|list|revoke`), and
   remote MCP for ChatGPT and the Claude apps through finc's own OAuth server with passkey approval (`docs/mcp.md`). Both
   off by default.
+- Backup login from outside: PIN + an authenticator code (or a recovery code) for browsers without passkeys; set up at
+  home, every use announced, never admin (research_notes/proposals/totp-backup-login.md).
 - Nightly data retention (old run logs, security events, caches pruned at set ages).
 - A reminder to rebuild the images after 35 days, so Chromium keeps getting security updates.
 

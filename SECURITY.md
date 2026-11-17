@@ -77,8 +77,10 @@ So you can judge what counts as a break:
   Argon2id + XChaCha20-Poly1305). The master password is never stored; the vault starts locked on every worker start.
   Secrets are never read from environment variables.
 - **The PIN works only from home** (loopback and private addresses, without a proxy header). From the internet the only
-  ways in are a **paired-device token** (made by a single-use, 5-minute QR code at home) or a **passkey**. Passkey
-  sessions last 12 hours and cannot change admin settings or operate the worker.
+  ways in are a **paired-device token** (made by a single-use, 5-minute QR code at home), a **passkey**, or, if the
+  owner turned it on at home, the **backup login** (PIN + an authenticator code or a single-use recovery code, one
+  shared lock after 5 wrong tries, every use announced). Passkey and backup-login sessions last 12 hours and cannot
+  change admin settings or operate the worker.
 - **Remote access** goes through Caddy on one HTTPS port; the worker's own port is published only on 127.0.0.1. The worker trusts
   forwarding headers only from Caddy's fixed address, answers only to known host names, and refuses cross-site writes.
 - **The Android app** keeps its token in the Android Keystore behind the fingerprint or the phone's PIN, sends every
@@ -117,6 +119,9 @@ These are documented design limits, not vulnerabilities (but ideas to improve th
   stolen.
 - Anyone signed in can use "Lock everything", including a thief; the worst it does is lock the owner out until they are
   home.
+- The backup login's authenticator secret is in the database next to the PIN's hash (it has to work while the vault is
+  locked); with the database file and the PIN, someone could make codes. Unlike a passkey, a PIN and a live code can be
+  phished, which is why it is a backup, announced every time, and never admin.
 - An AI app you connect (locally or remotely) gets the privacy-checked tool results, and its model provider keeps them
   under its own terms. Once you approve ChatGPT or Claude, their servers can call the read-only tools until you revoke
   the connection.

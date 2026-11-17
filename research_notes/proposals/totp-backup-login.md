@@ -1,6 +1,6 @@
 # Backup login from outside: PIN + authenticator code (TOTP)
 
-Status: **proposal** (2026-11-17), not built. Decisions at the end.
+Status: **approved** 2026-11-17 with T1 PIN + code, T2 8 recovery codes, T3 a 12-hour non-admin session, T4 every backup login announced; being built.
 
 ## 1. What and why
 
