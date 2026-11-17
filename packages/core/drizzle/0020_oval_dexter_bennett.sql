@@ -1,0 +1,1 @@
+ALTER TABLE `oauth_grant` ADD `client_auth` text DEFAULT 'none' NOT NULL;

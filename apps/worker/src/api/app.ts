@@ -1407,10 +1407,14 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     // must not send one
     const clientId = form.client_id ?? assertionIssuer(form.client_assertion);
     const jwksUrl = clientId !== undefined && Object.prototype.hasOwnProperty.call(CLIENT_JWKS, clientId) ? CLIENT_JWKS[clientId] : undefined;
-    if (jwksUrl && clientId) {
+    // sticky, not mandatory (found live 2026-11-17: ChatGPT exchanged its code without an assertion although finc
+    // advertised private_key_jwt): an assertion that is sent must verify, and a grant that began with one needs one on
+    // every refresh (refreshGrant); a grant that began without one stays a public client with PKCE
+    let assertionVerified = false;
+    if (jwksUrl && clientId && (form.client_assertion !== undefined || form.client_assertion_type !== undefined)) {
       if (form.client_assertion_type !== CLIENT_ASSERTION_TYPE || !form.client_assertion) {
-        record(c, 'mcp.remote_refused', { step: 'client_auth', reason: 'no assertion' }, { aggregate: true });
-        return fail(401, 'invalid_client', 'this client authenticates with private_key_jwt');
+        record(c, 'mcp.remote_refused', { step: 'client_auth', reason: 'bad assertion type' }, { aggregate: true });
+        return fail(401, 'invalid_client', 'client_assertion_type must be jwt-bearer');
       }
       const audiences = [`${base}/oauth/token`, base];
       let check = checkClientAssertion(form.client_assertion, { clientId, audiences, jwks: await fetchClientJwks(jwksUrl, false).catch(() => null), now: t, seen: seenJti });
@@ -1420,7 +1424,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         return fail(401, 'invalid_client', 'the client assertion was refused');
       }
       form.client_id = clientId;
-    } else if (form.client_assertion !== undefined || form.client_assertion_type !== undefined) {
+      assertionVerified = true;
+    } else if (!jwksUrl && (form.client_assertion !== undefined || form.client_assertion_type !== undefined)) {
       return fail(401, 'invalid_client', 'this client is public (PKCE, no assertion)');
     }
     if (form.grant_type === 'authorization_code') {
@@ -1429,12 +1434,12 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         record(c, 'mcp.remote_refused', { step: 'token', reason: r.description }, { aggregate: true });
         return fail(400, r.error, r.description);
       }
-      const g = createGrant(state.db, r.grant, t);
-      record(c, 'mcp.remote_token', { app: r.grant.app, grant: g.grantId, kind: 'first' });
+      const g = createGrant(state.db, r.grant, t, assertionVerified ? 'private_key_jwt' : 'none');
+      record(c, 'mcp.remote_token', { app: r.grant.app, grant: g.grantId, kind: 'first', clientAuth: assertionVerified ? 'private_key_jwt' : 'none' });
       return c.json(g.tokens, 200, { 'Cache-Control': 'no-store', Pragma: 'no-cache' });
     }
     if (form.grant_type === 'refresh_token') {
-      const r = refreshGrant(state.db, form.refresh_token, form.client_id, resource, t);
+      const r = refreshGrant(state.db, form.refresh_token, form.client_id, resource, t, assertionVerified);
       if (!r.ok) {
         if (r.reused) securityAlert(state.db, state.vault, 'an AI app connection was revoked: one of its refresh tokens was used twice (possible theft)', { kind: 'mcp.remote_refresh_reuse', actor: 'oauth', address: clientAddress(c), detail: { grant: r.reused.grantId }, at: t });
         else record(c, 'mcp.remote_refused', { step: 'refresh', reason: r.description }, { aggregate: true });

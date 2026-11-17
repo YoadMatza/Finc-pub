@@ -314,30 +314,38 @@ describe('remote MCP', () => {
     expect((await mcp(env, tok.body.access_token, 'tools/list')).status).toBe(200);
   });
 
-  it('ChatGPT proves itself at the token endpoint with its own key (private_key_jwt), for codes and refreshes', async () => {
+  it('ChatGPT and its key (private_key_jwt): a sent assertion must verify; a connection begun with one keeps needing one', async () => {
     const env = setup();
     await turnOn(env);
     expect((await env.req('/.well-known/oauth-authorization-server', { headers: EDGE })).body.token_endpoint_auth_methods_supported).toEqual(['none', 'private_key_jwt']);
-    await openWindow(env);
-    const q = new URLSearchParams({ response_type: 'code', client_id: CHATGPT_CIMD, redirect_uri: CHATGPT_CB, code_challenge: CHALLENGE, code_challenge_method: 'S256', resource: RESOURCE, state: 's' });
-    const id = new URL((await env.req(`/oauth/authorize?${q}`, { headers: EDGE })).headers.get('location')!).searchParams.get('req')!;
-    const options = await env.json(`/api/oauth/requests/${id}/options`, {}, EDGE);
-    const code = new URL((await env.json(`/api/oauth/requests/${id}/approve`, { response: { id: 'cred-1', challengeEcho: options.body.challenge } }, EDGE)).body.redirect).searchParams.get('code')!;
-    const base = { grant_type: 'authorization_code', code, redirect_uri: CHATGPT_CB, client_id: CHATGPT_CIMD, code_verifier: VERIFIER, resource: RESOURCE };
+    const connect = async () => {
+      await openWindow(env);
+      const q = new URLSearchParams({ response_type: 'code', client_id: CHATGPT_CIMD, redirect_uri: CHATGPT_CB, code_challenge: CHALLENGE, code_challenge_method: 'S256', resource: RESOURCE, state: 's' });
+      const id = new URL((await env.req(`/oauth/authorize?${q}`, { headers: EDGE })).headers.get('location')!).searchParams.get('req')!;
+      const options = await env.json(`/api/oauth/requests/${id}/options`, {}, EDGE);
+      const code = new URL((await env.json(`/api/oauth/requests/${id}/approve`, { response: { id: 'cred-1', challengeEcho: options.body.challenge } }, EDGE)).body.redirect).searchParams.get('code')!;
+      return { grant_type: 'authorization_code', code, redirect_uri: CHATGPT_CB, client_id: CHATGPT_CIMD, code_verifier: VERIFIER, resource: RESOURCE };
+    };
     const ca = (o: Parameters<typeof assertion>[1] = {}) => ({ client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer', client_assertion: assertion(env.now(), o) });
-    // no assertion, another key, another audience: refused before the code is even looked at (so the code survives)
-    expect((await env.form('/oauth/token', base)).status).toBe(401);
+    // a bad assertion is refused before the code is looked at (so the code survives for the good one)
+    const base = await connect();
     expect((await env.form('/oauth/token', { ...base, ...ca({ key: OTHER_KEY.privateKey }) })).status).toBe(401);
     expect((await env.form('/oauth/token', { ...base, ...ca({ aud: 'https://evil.example/token' }) })).status).toBe(401);
+    expect((await env.form('/oauth/token', { ...base, client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer' })).status).toBe(401);
     const good = ca({ jti: 'one' });
     const tok = await env.form('/oauth/token', { ...base, ...good });
     expect(tok.status).toBe(200);
     expect(env.fetched).toContain(CHATGPT_JWKS);
-    // refresh: an assertion is required too, and a replayed one is refused
+    // begun with a key: every refresh needs a fresh assertion; a replayed one is refused; a missing one spends nothing
     const rbase = { grant_type: 'refresh_token', refresh_token: tok.body.refresh_token, client_id: CHATGPT_CIMD };
-    expect((await env.form('/oauth/token', rbase)).status).toBe(401);
+    expect((await env.form('/oauth/token', rbase)).status).toBe(400);
     expect((await env.form('/oauth/token', { ...rbase, ...good })).status).toBe(401);
     expect((await env.form('/oauth/token', { ...rbase, ...ca() })).status).toBe(200);
+    // begun without one (what ChatGPT did live): a public client with PKCE, as before
+    const plain = await connect();
+    const t2 = await env.form('/oauth/token', plain);
+    expect(t2.status).toBe(200);
+    expect((await env.form('/oauth/token', { grant_type: 'refresh_token', refresh_token: t2.body.refresh_token, client_id: CHATGPT_CIMD })).status).toBe(200);
   });
 
   it('a public client (Claude) may not send an assertion', async () => {

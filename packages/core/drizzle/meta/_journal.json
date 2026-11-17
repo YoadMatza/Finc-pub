@@ -141,6 +141,13 @@
       "when": 1794905649668,
       "tag": "0019_wooden_pet_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1794916443100,
+      "tag": "0020_oval_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }

@@ -301,9 +301,9 @@ function issue(db: Db, grantId: number, now: number): TokenSet {
 }
 
 /** A new grant from a redeemed code, with its first tokens. */
-export function createGrant(db: Db, g: CodeGrant, now: number): { grantId: number; tokens: TokenSet } {
+export function createGrant(db: Db, g: CodeGrant, now: number, clientAuth: 'none' | 'private_key_jwt' = 'none'): { grantId: number; tokens: TokenSet } {
   return db.$client.transaction(() => {
-    const r = db.$client.prepare('insert into oauth_grant (client_id, app, resource, created_at, refresh_expires_at) values (?, ?, ?, ?, ?)').run(g.clientId, g.app, g.resource, iso(now), iso(now));
+    const r = db.$client.prepare('insert into oauth_grant (client_id, app, resource, created_at, refresh_expires_at, client_auth) values (?, ?, ?, ?, ?, ?)').run(g.clientId, g.app, g.resource, iso(now), iso(now), clientAuth);
     const grantId = Number(r.lastInsertRowid);
     db.$client.prepare('update oauth_client set last_used_at = ? where client_id = ?').run(iso(now), g.clientId);
     return { grantId, tokens: issue(db, grantId, now) };
@@ -312,14 +312,18 @@ export function createGrant(db: Db, g: CodeGrant, now: number): { grantId: numbe
 
 export type RefreshResult = { ok: true; grantId: number; tokens: TokenSet } | { ok: false; error: 'invalid_grant'; description: string; reused?: { grantId: number } };
 
-/** Rotates a refresh token. A token already used once revokes its whole grant (RFC 9700 refresh token reuse). */
-export function refreshGrant(db: Db, token: unknown, clientId: unknown, resource: unknown, now: number): RefreshResult {
+/**
+ * Rotates a refresh token. A token already used once revokes its whole grant (RFC 9700 refresh token reuse). A grant
+ * that began with a signed client assertion needs one again (`assertionVerified`), checked before the token is spent.
+ */
+export function refreshGrant(db: Db, token: unknown, clientId: unknown, resource: unknown, now: number, assertionVerified = false): RefreshResult {
   if (typeof token !== 'string' || !token.startsWith('finc_rt_') || token.length > 120) return { ok: false, error: 'invalid_grant', description: 'unknown refresh token' };
   return db.$client.transaction((): RefreshResult => {
     const t = db.$client
-      .prepare(`select t.id, t.grant_id, t.expires_at, t.used_at, g.client_id, g.resource, g.revoked_at from oauth_token t join oauth_grant g on g.id = t.grant_id where t.token_hash = ? and t.kind = 'refresh'`)
-      .get(sha(token)) as { id: number; grant_id: number; expires_at: string; used_at: string | null; client_id: string; resource: string; revoked_at: string | null } | undefined;
+      .prepare(`select t.id, t.grant_id, t.expires_at, t.used_at, g.client_id, g.resource, g.revoked_at, g.client_auth from oauth_token t join oauth_grant g on g.id = t.grant_id where t.token_hash = ? and t.kind = 'refresh'`)
+      .get(sha(token)) as { id: number; grant_id: number; expires_at: string; used_at: string | null; client_id: string; resource: string; revoked_at: string | null; client_auth: string } | undefined;
     if (!t || t.revoked_at !== null) return { ok: false, error: 'invalid_grant', description: 'unknown or revoked refresh token' };
+    if (t.client_auth === 'private_key_jwt' && !assertionVerified) return { ok: false, error: 'invalid_grant', description: 'this connection signs its requests; the client assertion is missing' };
     if (t.used_at !== null) {
       revokeGrantById(db, t.grant_id, 'refresh_reuse', now);
       return { ok: false, error: 'invalid_grant', description: 'refresh token already used; the connection is revoked', reused: { grantId: t.grant_id } };

@@ -667,6 +667,8 @@ export const oauthGrant = sqliteTable('oauth_grant', {
   revokedReason: text('revoked_reason'),
   callsDay: text('calls_day'),
   callsToday: integer('calls_today').notNull().default(0),
+  /** 'private_key_jwt' when the grant began with a signed client assertion: every refresh must then carry one */
+  clientAuth: text('client_auth').notNull().default('none'),
 });
 
 /** Access and refresh tokens, SHA-256 only. A refresh token is used once (`used_at`); a second use revokes the grant. */
