@@ -1,6 +1,6 @@
 # Push alerts on the phone app
 
-Status: **approved** 2026-11-17 with P1 FCM empty pings, P2 real text fetched from finc, P3 Telegram kept in parallel, P4 one-time codes in the app; being built.
+Status: **approved** 2026-11-17 with P1 FCM empty pings, P2 real text fetched from finc, P3 Telegram kept in parallel, P4 one-time codes in the app. **Built and live 2026-11-17** (`3b47ef2`, app vc35 `ae5ade2`): Firebase project `finc-deb3f` (Spark, free; Analytics and Gemini off); the phone registered, a test push reached it and was fetched 6 seconds later. One change from §2: the background receiver uses a per-device push secret (the vault's key needs a fingerprint, which a notification cannot wait for).
 
 ## 1. What and why
 
