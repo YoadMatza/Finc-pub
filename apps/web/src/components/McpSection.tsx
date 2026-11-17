@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ApiError, api } from '../api';
 import { relTime } from '../format';
 import { useI18n } from '../i18n';
 import { lastUsedLabel, mcpCommands, sortTokens, tokenPath } from '../mcpSettings';
 import type { McpTokensPayload, Settings } from '../types';
+import { CopyLine } from './CopyLine';
 import { Empty, ErrorBox, Row, Spinner } from './ui';
 
 /**
@@ -44,9 +45,9 @@ export function McpSection({ settings }: { settings: Settings }) {
           <div className="flex flex-col gap-2 text-sm">
             <span className="text-muted">{t('mcp_steps')}</span>
             <span>{t('mcp_step_create')}</span>
-            <CommandLine text={cmd.create} />
+            <CopyLine text={cmd.create} />
             <span>{t('mcp_step_add')}</span>
-            <CommandLine text={cmd.claudeCode} />
+            <CopyLine text={cmd.claudeCode} />
             <span className="text-xs text-muted">{t('mcp_step_other')}</span>
             <span className="text-xs text-muted">
               {t('mcp_pc_only')} {t('mcp_off_note')}
@@ -54,39 +55,6 @@ export function McpSection({ settings }: { settings: Settings }) {
           </div>
           <McpTokens />
         </>
-      )}
-    </div>
-  );
-}
-
-/** A command to run on the PC: left-to-right whatever the page direction, selectable, with Copy where the browser allows it. */
-function CommandLine({ text }: { text: string }) {
-  const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const id = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(id);
-  }, [copied]);
-  // the clipboard API needs a secure context; over plain http the text stays selectable
-  const canCopy = typeof navigator !== 'undefined' && !!navigator.clipboard;
-  return (
-    <div className="flex items-center gap-2">
-      <code className="num flex-1 min-w-0 break-all select-all rounded-lg border border-border px-2 py-1 text-xs text-start" dir="ltr">
-        {text}
-      </code>
-      {canCopy && (
-        <button
-          className="btn btn-sm shrink-0"
-          onClick={() => {
-            navigator.clipboard.writeText(text).then(
-              () => setCopied(true),
-              () => setCopied(false),
-            );
-          }}
-        >
-          {copied ? t('mcp_copied') : t('mcp_copy')}
-        </button>
       )}
     </div>
   );

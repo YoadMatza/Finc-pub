@@ -667,6 +667,35 @@ export interface McpTokensPayload {
   tokens: McpToken[];
 }
 
+/** The two apps remote MCP accepts (remote-mcp.md §4.2); the name comes from finc's allow-list, not the client. */
+export type RemoteMcpApp = 'ChatGPT' | 'Claude';
+/** One remote grant: an app the owner approved with a passkey. */
+export interface McpRemoteGrant {
+  id: number;
+  app: RemoteMcpApp;
+  createdAt: string;
+  lastUsedAt: string | null;
+  callsToday: number;
+  /** when the grant ends unless it is used (refresh tokens renew it) */
+  expiresAt: string;
+}
+/** GET /api/mcp/remote. `endpoint` is null until a public address is set; `windowUntil` is the open "Connect an app" window. */
+export interface McpRemotePayload {
+  enabled: boolean;
+  endpoint: string | null;
+  windowUntil: string | null;
+  grants: McpRemoteGrant[];
+}
+/** GET /api/oauth/requests/:id: what the consent page shows. */
+export interface OAuthRequestInfo {
+  app: RemoteMcpApp;
+  redirectHost: string;
+  scope: 'finc.read';
+  expiresAt: string;
+}
+/** Why a consent request cannot be shown. */
+export type OAuthRequestCode = 'not_found' | 'expired' | 'window_closed' | 'used';
+
 export interface Settings {
   version: string;
   language: 'he' | 'en';
@@ -683,6 +712,8 @@ export interface Settings {
     newsSummary?: boolean;
     /** AI apps may read finc over MCP (mcp-server.md §5.4). Off by default; absent from older workers: off. */
     mcp?: boolean;
+    /** ChatGPT and Claude may reach finc from anywhere over remote MCP (remote-mcp.md). Off by default; absent: off. */
+    mcpRemote?: boolean;
   };
   schedule: { times: string[]; jitterMinutes: number; timezone: string; monthsBack: number };
   vault: 'unlocked' | 'locked' | 'missing';

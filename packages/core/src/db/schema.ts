@@ -639,3 +639,43 @@ export const mcpToken = sqliteTable('mcp_token', {
   callsDay: text('calls_day'),
   callsToday: integer('calls_today').notNull().default(0),
 });
+
+/**
+ * Remote MCP (research_notes/proposals/remote-mcp.md): the OAuth clients finc accepts. Only ChatGPT (by its Client ID
+ * Metadata Document URL) and Claude (Dynamic Client Registration with Claude's callbacks); `redirect_uris` is JSON.
+ */
+export const oauthClient = sqliteTable('oauth_client', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  clientId: text('client_id').notNull().unique(),
+  kind: text('kind').notNull(), // cimd | dcr
+  app: text('app').notNull(), // ChatGPT | Claude
+  redirectUris: text('redirect_uris').notNull(),
+  createdAt: text('created_at').notNull(),
+  lastUsedAt: text('last_used_at'),
+});
+
+/** One approved connection of an app (a passkey approval); its tokens die with it. */
+export const oauthGrant = sqliteTable('oauth_grant', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  clientId: text('client_id').notNull(),
+  app: text('app').notNull(),
+  resource: text('resource').notNull(),
+  createdAt: text('created_at').notNull(),
+  lastUsedAt: text('last_used_at'),
+  refreshExpiresAt: text('refresh_expires_at').notNull(),
+  revokedAt: text('revoked_at'),
+  revokedReason: text('revoked_reason'),
+  callsDay: text('calls_day'),
+  callsToday: integer('calls_today').notNull().default(0),
+});
+
+/** Access and refresh tokens, SHA-256 only. A refresh token is used once (`used_at`); a second use revokes the grant. */
+export const oauthToken = sqliteTable('oauth_token', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  grantId: integer('grant_id').notNull(),
+  kind: text('kind').notNull(), // access | refresh
+  tokenHash: text('token_hash').notNull().unique(),
+  createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+  usedAt: text('used_at'),
+});

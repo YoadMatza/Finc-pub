@@ -24,6 +24,7 @@ security alerts work while the vault is locked).
 | Let's Encrypt | Only for access from outside home | none (automatic) | — | free |
 | A NAS over SFTP (your own) | No (off-machine backup copies) | an upload-only SSH user | vault: `nas_backup` | your hardware |
 | An AI app of your choice over MCP (Claude Desktop, Claude Code…) | No, off by default | a finc MCP token per app | `data/mcp/<app>.token` | the app's own plan |
+| ChatGPT or Claude over remote MCP (from anywhere) | No, off by default | you approve each app with your passkey | finc's database (token hashes only) | the app's own plan |
 
 Without any of the optional services finc still syncs your banks, computes every number, and shows the hub at home.
 
@@ -134,6 +135,12 @@ passkeys from outside.
 | **Account / key** | A finc token per app, made on the PC (`.\finc mcp token create <app>`), kept in `data/mcp/<app>.token`, never shown; the app's settings name the app, not the token. |
 | **Sent** | To the app, and from it to **its** model provider: the same as finc's chat sends (spending totals, categories, dates, counts, your own stream labels and event names, card-purchase merchant names). Never account or card numbers, bank descriptions, notes, payers, balances per account, or anything from the vault. Every result passes an allow-list per tool and a final scrub of identifiers. finc never contacts the app's provider itself. |
 | **Turn off** | Settings → AI → AI apps (MCP), or revoke one app there or with `.\finc mcp token revoke <app>`. The panic button revokes every app. |
+
+**Remote (ChatGPT, Claude on the web and the phone):** the same tools and the same privacy checks, but called by
+OpenAI's or Anthropic's servers over the internet at `https://<your host>:7443/mcp`, with a token you approve with a
+passkey (Settings → AI → Remote AI apps → Connect an app). finc contacts nothing for this except, for ChatGPT, one
+fixed address (`https://chatgpt.com/oauth/client.json`, ChatGPT's client description), at most once an hour while
+you connect it. Setup and limits: [docs/mcp.md](mcp.md#from-anywhere-chatgpt-and-claude).
 
 ## Downloads when you build or update (not at run time)
 

@@ -52,6 +52,35 @@ spending totals.
 - One app: Revoke in Settings, or `.\finc mcp token revoke <app>` (also deletes its token file).
 - All apps: turn the switch off (every call is refused at once). The panic button revokes every app's token.
 
+## From anywhere: ChatGPT and Claude
+
+ChatGPT and the Claude apps (web, desktop, phone) cannot start a program on your PC; their servers call MCP servers
+over the internet. finc can answer them at `https://<your host>:7443/mcp` once you allow it. The tools and the
+privacy checks are the same as above; what is new is a sign-in that faces the internet, so it is guarded closely.
+
+1. **Turn it on** at home: Settings → AI → Remote AI apps. The public address must be set (Settings → Phone access).
+2. Press **Connect an app**. A connection can only start in the next 10 minutes, and only one.
+3. In the app, add a custom connector / MCP server with the address shown (`https://<your host>:7443/mcp`). ChatGPT
+   needs Developer Mode; for Claude, Settings → Connectors → Add custom connector.
+4. The app opens finc's approval page: check the app's name and where it returns, then **Approve with passkey**.
+
+You get a Telegram alert for every approval. Settings lists each connected app with its last use and calls today;
+**Revoke** ends it at once. Turning the switch off refuses every remote call; the panic button revokes everything.
+
+What protects it:
+
+- Only ChatGPT and Claude can connect, and only to their own callback addresses. finc fetches nothing for a
+  connection except ChatGPT's fixed client description.
+- An approval needs a fresh passkey signature on finc's page, inside the 10-minute window you opened at home.
+- PKCE on every sign-in; codes are single-use for 60 seconds. Access tokens last an hour and work only on finc's
+  `/mcp`; refresh tokens last 30 days and change on every use, and a reused one ends the connection (with an alert).
+  finc stores only hashes of tokens.
+- Calls from a web page are refused (no `Origin` allowed on `/mcp`); 30 calls a minute and 1,000 a day per app.
+- Every step is in the security log, never a token, a code or a result.
+
+What it cannot protect: once approved, OpenAI's or Anthropic's servers can call finc's read-only tools until you
+revoke them, and the provider keeps what its model saw under its own terms.
+
 ## How it works
 
 `finc mcp` runs inside the worker's container and speaks MCP (JSON-RPC over stdio, protocol 2025-11-25 and earlier)

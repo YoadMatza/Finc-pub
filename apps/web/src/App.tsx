@@ -14,6 +14,7 @@ import { Categories } from './pages/Categories';
 import { Trends } from './pages/Trends';
 import { Events } from './pages/Events';
 import { Chat } from './pages/Chat';
+import { Connect } from './pages/Connect';
 import { Hub } from './pages/Hub';
 import { Lock } from './pages/Lock';
 import { Login } from './pages/Login';
@@ -140,6 +141,9 @@ export function App() {
 
   if (!isNative && location.pathname === '/pair') return <PairInfo />;
   if (!isNative && location.pathname === '/passkey') return <PasskeyEnroll />;
+  // the remote-AI consent page (remote-mcp.md §4.3): opened from a browser ChatGPT or Claude sent here, with no hub
+  // session; approval is its own passkey signature, so it renders before (and without) the sign-in gate
+  if (!isNative && location.pathname === '/connect') return <Connect />;
   return (
     <>
       {boot === 'loading' ? (

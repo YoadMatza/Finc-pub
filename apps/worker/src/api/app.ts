@@ -36,6 +36,27 @@ import {
   revokeAllDevices,
   MCP_PER_DAY,
   createMcpToken,
+  CIMD_ALLOWED,
+  OAUTH_SCOPE,
+  OAuthCodes,
+  REQUEST_TTL_MS,
+  acceptClientMetadata,
+  appForRedirect,
+  closeConnectWindow,
+  connectWindowUntil,
+  createGrant,
+  getOAuthClient,
+  listGrants,
+  mcpRemoteEnabled,
+  openConnectWindow,
+  refreshGrant,
+  registerOAuthClient,
+  revokeAllGrants,
+  revokeGrant,
+  setMcpRemoteEnabled,
+  useAccessToken,
+  validChallenge,
+  type OAuthClient,
   MCP_PER_MINUTE,
   listMcpTokens,
   mcpEnabled,
@@ -192,6 +213,7 @@ import { buildPanel, withinMs } from '../insights-panel.js';
 import type { WorkerState } from '../server.js';
 import { ChatMemory } from './chat-memory.js';
 import { Attempts, BUSY, LockedFailures, OneAtATime, Pairings, PinGuard, type SessionEntry, Sessions, tokenMatches } from './auth.js';
+import { McpBridge } from '../mcp/bridge.js';
 import { EnrolmentCodes, LoginChallenges, passkeyNameFromAgent, passkeyRp, passkeyUserId, realWebAuthn, type WebAuthnFns } from './passkeys.js';
 import { defaultWebDist, serveStatic } from './static.js';
 
@@ -245,6 +267,8 @@ export interface ApiOptions {
   webauthn?: Partial<WebAuthnFns>;
   /** The clock for sessions, enrolment codes and sign-in challenges; tests move it forward. */
   now?: () => number;
+  /** Fetches an allow-listed OAuth client metadata document (remote MCP); tests pass a fake. */
+  oauthFetch?: typeof fetch;
   /** The NAS pairing's probe, key generation and connection; tests point them at a local fake SFTP server. */
   offsite?: Partial<SetupDeps>;
   /** Extra host names to answer to, on top of the PC's own, FINC_PUBLIC_HOST/FINC_ALLOWED_HOSTS and the public URL's. */
@@ -421,7 +445,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     // AI apps lose access too (MCP design §5.4); a failure here must not stop the lockdown record
     let mcpTokens = 0;
     try {
-      mcpTokens = revokeAllMcpTokens(state.db);
+      mcpTokens = revokeAllMcpTokens(state.db) + revokeAllGrants(state.db, now());
+      closeConnectWindow(state.db);
     } catch (e) {
       log.warn({ err: e instanceof Error ? e.message : String(e) }, 'lockdown: revoking MCP tokens failed');
     }
@@ -496,7 +521,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     await next();
     c.res.headers.set('Cache-Control', 'no-store');
   };
-  for (const p of ['/api/*', '/mcp/*', '/health', '/whoami', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
+  for (const p of ['/api/*', '/mcp', '/mcp/*', '/oauth/*', '/.well-known/oauth-*', '/health', '/whoami', '/runs', '/unlock', '/lock', '/sync', '/alarm', '/alarm/*']) app.use(p, noStore);
   /**
    * Writes from another site are refused for everyone, signed in or not (review of P1-06/P1-07): a page on evil.example
    * can POST blind to http://127.0.0.1:7733/api/auth/login without rebinding (Host is then allowed) and lock the PIN.
@@ -522,7 +547,10 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       return c.json({ error: 'cross-site request refused' }, 403);
     }
     const type = c.req.header('content-type');
-    if (type !== undefined && !/^application\/json\s*(;|$)/i.test(type)) return c.json({ error: 'send JSON' }, 415);
+    // OAuth's token endpoint takes a form by its standard (RFC 6749 §4.1.3); it reads no cookie, so a cross-site form
+    // gains nothing there (remote MCP)
+    const formOk = c.req.path === '/oauth/token' && type !== undefined && /^application\/x-www-form-urlencoded\s*(;|$)/i.test(type);
+    if (type !== undefined && !formOk && !/^application\/json\s*(;|$)/i.test(type)) return c.json({ error: 'send JSON' }, 415);
     return next();
   });
 
@@ -1046,6 +1074,313 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     log.info({ passkey: pk.id, client: clientAddress(c) }, 'ui: signed in with a passkey');
     securityAlert(state.db, state.vault, `signed in with a passkey: "${pk.name}"`, { kind: 'passkey.login_ok', actor: `passkey:${pk.id}`, actorName: pk.name, address: clientAddress(c), at: now() });
     return c.json({ ok: true });
+  });
+
+  // --- remote MCP (research_notes/proposals/remote-mcp.md): finc as a one-owner OAuth authorization server for ChatGPT
+  // and Claude, and /mcp over Streamable HTTP. Everything here answers 404 while "Remote AI apps" is off.
+  /** The issuer: the public address without a trailing slash, or null when none is set. */
+  const oauthBase = (): string | null => {
+    const v = getSetting(state.db, 'ui.publicUrl');
+    if (!v) return null;
+    try {
+      const u = new URL(v);
+      return u.protocol === 'https:' ? `${u.protocol}//${u.host}` : null;
+    } catch {
+      return null;
+    }
+  };
+  const mcpResource = (base: string): string => `${base}/mcp`;
+  const remoteOff = (c: Context): Response | null => (mcpRemoteEnabled(state.db) && oauthBase() ? null : c.json({ error: 'not found' }, 404));
+  const oauthErr = (c: Context, status: 400 | 401 | 403 | 429, error: string, description: string): Response => c.json({ error, error_description: description }, status, { 'Cache-Control': 'no-store' });
+  /** A global budget for the OAuth endpoints: Docker Desktop hides callers' addresses, so it cannot be per address. */
+  const oauthBudget = { start: 0, n: 0 };
+  const oauthLimited = (): boolean => {
+    const t = now();
+    if (t - oauthBudget.start > 60_000) {
+      oauthBudget.start = t;
+      oauthBudget.n = 0;
+    }
+    return ++oauthBudget.n > 60;
+  };
+  const oauthCodes = new OAuthCodes();
+  /** Authorization requests waiting for the owner's passkey, in memory (10 minutes, at most 20). */
+  type PendingAuth = { client: OAuthClient; redirectUri: string; state: string | null; challenge: string; resource: string; expires: number; used: boolean; webauthnChallenge: string | null };
+  const pendingAuth = new Map<string, PendingAuth>();
+  const cimdCache = new Map<string, { doc: unknown; at: number }>();
+  const oauthFetch = opts.oauthFetch ?? fetch;
+  /** Fetches an allow-listed client metadata document: https only, no redirects, 5 seconds, 64 KB. Never any other URL. */
+  const fetchClientMetadata = async (url: string): Promise<unknown> => {
+    if (!Object.prototype.hasOwnProperty.call(CIMD_ALLOWED, url)) return null;
+    const hit = cimdCache.get(url);
+    if (hit && now() - hit.at < 3_600_000) return hit.doc;
+    const res = await oauthFetch(url, { redirect: 'error', signal: AbortSignal.timeout(5000), headers: { accept: 'application/json' } });
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (text.length > 65_536) return null;
+    const doc = JSON.parse(text) as unknown;
+    cimdCache.set(url, { doc, at: now() });
+    return doc;
+  };
+  const withParams = (uri: string, params: Record<string, string | null>): string => {
+    const u = new URL(uri);
+    for (const [k, v] of Object.entries(params)) if (v !== null) u.searchParams.set(k, v);
+    return u.toString();
+  };
+
+  app.get('/.well-known/oauth-protected-resource', (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    const base = oauthBase()!;
+    return c.json({ resource: mcpResource(base), authorization_servers: [base], scopes_supported: [OAUTH_SCOPE], bearer_methods_supported: ['header'], resource_name: 'finc' });
+  });
+  app.get('/.well-known/oauth-protected-resource/mcp', (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    const base = oauthBase()!;
+    return c.json({ resource: mcpResource(base), authorization_servers: [base], scopes_supported: [OAUTH_SCOPE], bearer_methods_supported: ['header'], resource_name: 'finc' });
+  });
+  app.get('/.well-known/oauth-authorization-server', (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    const base = oauthBase()!;
+    return c.json({
+      issuer: base,
+      authorization_endpoint: `${base}/oauth/authorize`,
+      token_endpoint: `${base}/oauth/token`,
+      registration_endpoint: `${base}/oauth/register`,
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
+      code_challenge_methods_supported: ['S256'],
+      token_endpoint_auth_methods_supported: ['none'],
+      scopes_supported: [OAUTH_SCOPE],
+      client_id_metadata_document_supported: true,
+      authorization_response_iss_parameter_supported: true,
+    });
+  });
+
+  // Dynamic Client Registration (Claude): only while the owner's connection window is open, only Claude's callbacks
+  app.post('/oauth/register', async (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    if (oauthLimited()) return oauthErr(c, 429, 'temporarily_unavailable', 'too many requests; try again in a minute');
+    if (!connectWindowUntil(state.db, now())) {
+      record(c, 'mcp.remote_refused', { step: 'register', reason: 'window_closed' }, { aggregate: true });
+      return oauthErr(c, 400, 'invalid_client_metadata', "open 'Connect an app' in finc's Settings at home first");
+    }
+    const body = await c.req.json().catch(() => null);
+    const r = registerOAuthClient(state.db, body, now());
+    if (!r.ok) {
+      record(c, 'mcp.remote_refused', { step: 'register', reason: r.error }, { aggregate: true });
+      return oauthErr(c, 400, r.error, r.description);
+    }
+    record(c, 'mcp.remote_client', { app: r.client.app, kind: 'dcr' });
+    return c.json(
+      { client_id: r.client.clientId, client_id_issued_at: Math.floor(now() / 1000), redirect_uris: r.client.redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], client_name: r.client.app },
+      201,
+      { 'Cache-Control': 'no-store' },
+    );
+  });
+
+  // The authorization request: checked here, then the owner's browser goes to the consent page (/connect)
+  app.get('/oauth/authorize', async (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    if (oauthLimited()) return c.text('too many requests; try again in a minute', 429);
+    const base = oauthBase()!;
+    const q = c.req.query();
+    const clientId = q.client_id ?? '';
+    let client: OAuthClient | null = null;
+    try {
+      if (Object.prototype.hasOwnProperty.call(CIMD_ALLOWED, clientId)) {
+        const doc = await fetchClientMetadata(clientId);
+        const r = doc ? acceptClientMetadata(state.db, clientId, doc, now()) : null;
+        client = r && r.ok ? r.client : null;
+      } else if (clientId.length <= 200) client = getOAuthClient(state.db, clientId);
+    } catch (e) {
+      log.warn({ err: e instanceof Error ? e.message : String(e) }, 'oauth: the client metadata document could not be read');
+    }
+    const redirectUri = q.redirect_uri ?? '';
+    // never redirect to an address finc has not checked: an unknown client or callback gets a plain page
+    if (!client || !client.redirectUris.includes(redirectUri) || !appForRedirect(redirectUri)) {
+      record(c, 'mcp.remote_refused', { step: 'authorize', reason: client ? 'redirect_uri' : 'client' }, { aggregate: true });
+      return c.text('finc does not know this app or its return address. Only ChatGPT and Claude can connect.', 400);
+    }
+    const back = (error: string, description: string) => c.redirect(withParams(redirectUri, { error, error_description: description, state: q.state ?? null, iss: base }), 302);
+    if (q.response_type !== 'code') return back('unsupported_response_type', 'response_type must be code');
+    if (q.code_challenge_method !== 'S256' || !validChallenge(q.code_challenge)) return back('invalid_request', 'PKCE with S256 is required');
+    const resource = (q.resource ?? '').replace(/\/$/, '');
+    if (resource.toLowerCase() !== mcpResource(base).toLowerCase()) return back('invalid_target', `resource must be ${mcpResource(base)}`);
+    const scopes = (q.scope ?? '').split(' ').filter(Boolean);
+    if (scopes.some((x) => x !== OAUTH_SCOPE && x !== 'offline_access')) return back('invalid_scope', `the only scope is ${OAUTH_SCOPE}`);
+    if (q.state !== undefined && q.state.length > 500) return back('invalid_request', 'state is too long');
+    const t = now();
+    for (const [k, v] of pendingAuth) if (v.expires <= t || v.used) pendingAuth.delete(k);
+    if (pendingAuth.size >= 20) return back('temporarily_unavailable', 'too many open requests');
+    const id = randomBytes(32).toString('base64url');
+    pendingAuth.set(id, { client, redirectUri, state: q.state ?? null, challenge: q.code_challenge!, resource: mcpResource(base), expires: t + REQUEST_TTL_MS, used: false, webauthnChallenge: null });
+    record(c, 'mcp.remote_request', { app: client.app });
+    return c.redirect(`${base}/connect?req=${id}`, 302);
+  });
+
+  /** The pending request for the consent page, or an error code the page explains. */
+  const pendingFor = (id: string): { ok: true; p: PendingAuth } | { ok: false; status: 404 | 409 | 410; code: 'not_found' | 'expired' | 'window_closed' | 'used' } => {
+    const p = pendingAuth.get(id);
+    if (!p) return { ok: false, status: 404, code: 'not_found' };
+    if (p.used) return { ok: false, status: 410, code: 'used' };
+    if (p.expires <= now()) return { ok: false, status: 410, code: 'expired' };
+    if (!mcpRemoteEnabled(state.db)) return { ok: false, status: 404, code: 'not_found' };
+    if (!connectWindowUntil(state.db, now())) return { ok: false, status: 409, code: 'window_closed' };
+    return { ok: true, p };
+  };
+  const pendingError = (c: Context, r: { status: 404 | 409 | 410; code: string }) =>
+    c.json({ error: r.code === 'window_closed' ? "Open 'Connect an app' in finc's Settings at home first, then add finc again in the app." : r.code === 'used' ? 'This request was already answered.' : r.code === 'expired' ? 'This request expired; add finc again in the app.' : 'Unknown request.', code: r.code }, r.status);
+  app.get('/api/oauth/requests/:id', (c) => {
+    const r = pendingFor(c.req.param('id'));
+    if (!r.ok) return pendingError(c, r);
+    return c.json({ app: r.p.client.app, redirectHost: new URL(r.p.redirectUri).host, scope: OAUTH_SCOPE, expiresAt: new Date(r.p.expires).toISOString() });
+  });
+  app.post('/api/oauth/requests/:id/options', async (c) => {
+    if (!sameOrigin(c)) return c.json({ error: 'cross-site request refused' }, 403);
+    const r = pendingFor(c.req.param('id'));
+    if (!r.ok) return pendingError(c, r);
+    const rp = requireRp();
+    const challenge = randomBytes(32).toString('base64url');
+    r.p.webauthnChallenge = challenge;
+    const options = await webauthn.generateAuthenticationOptions({ rpID: rp.rpId, userVerification: 'required', allowCredentials: [], challenge });
+    return c.json(options);
+  });
+  app.post('/api/oauth/requests/:id/approve', async (c) => {
+    if (!sameOrigin(c)) return c.json({ error: 'cross-site request refused' }, 403);
+    const id = c.req.param('id');
+    const r = pendingFor(id);
+    if (!r.ok) return pendingError(c, r);
+    const p = r.p;
+    const rp = requireRp();
+    const FAILED = 'the passkey did not verify; try again';
+    const body = z.object({ response: z.looseObject({ id: z.string().min(1).max(1024) }) }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success || !p.webauthnChallenge) return c.json({ error: FAILED }, 400);
+    const pk = findPasskey(state.db, body.data.response.id, rp.rpId);
+    if (!pk) return passkeyFailure(c, 401, FAILED, 'unknown or revoked passkey');
+    const gen = lockdownGen;
+    const expected = p.webauthnChallenge;
+    let newCounter: number | null = null;
+    try {
+      const v = await webauthn.verifyAuthenticationResponse({
+        response: body.data.response as unknown as AuthenticationResponseJSON,
+        expectedChallenge: expected,
+        expectedOrigin: rp.origin,
+        expectedRPID: rp.rpId,
+        credential: { id: pk.credentialId, publicKey: new Uint8Array(Buffer.from(pk.publicKey, 'base64url')), counter: pk.counter, transports: pk.transports },
+        requireUserVerification: true,
+      });
+      if (v.verified) newCounter = v.authenticationInfo.newCounter;
+    } catch (e) {
+      log.warn({ err: e instanceof Error ? e.message : String(e), passkey: pk.id }, 'oauth: the approval passkey did not verify');
+    }
+    p.webauthnChallenge = null; // one signature per challenge
+    if (newCounter === null) return passkeyFailure(c, 401, FAILED, 'signature not verified');
+    // re-check after the slow verification: a panic, the switch, the window or another approval may have happened
+    const again = pendingFor(id);
+    if (lockedDownSince(gen) || !again.ok) return again.ok ? c.json({ error: 'finc was locked down meanwhile' }, 409) : pendingError(c, again);
+    touchPasskey(state.db, pk.id, newCounter);
+    p.used = true;
+    closeConnectWindow(state.db); // one approval per window
+    const code = oauthCodes.issue({ clientId: p.client.clientId, app: p.client.app, redirectUri: p.redirectUri, challenge: p.challenge, resource: p.resource }, now());
+    securityAlert(state.db, state.vault, `${p.client.app} was allowed to read finc (approved with passkey "${pk.name}")`, { kind: 'mcp.remote_approved', actor: `passkey:${pk.id}`, actorName: pk.name, address: clientAddress(c), detail: { app: p.client.app }, at: now() });
+    return c.json({ redirect: withParams(p.redirectUri, { code, state: p.state, iss: oauthBase() }) });
+  });
+  app.post('/api/oauth/requests/:id/deny', (c) => {
+    if (!sameOrigin(c)) return c.json({ error: 'cross-site request refused' }, 403);
+    const p = pendingAuth.get(c.req.param('id'));
+    if (!p || p.used) return c.json({ error: 'Unknown request.', code: 'not_found' }, 404);
+    p.used = true;
+    record(c, 'mcp.remote_denied', { app: p.client.app });
+    return c.json({ redirect: withParams(p.redirectUri, { error: 'access_denied', error_description: 'the owner said no', state: p.state, iss: oauthBase() }) });
+  });
+
+  // The token endpoint: public clients with PKCE; refresh tokens rotate, a reused one revokes its connection
+  app.post('/oauth/token', async (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    if (oauthLimited()) return oauthErr(c, 429, 'temporarily_unavailable', 'too many requests; try again in a minute');
+    const type = c.req.header('content-type') ?? '';
+    const form: Record<string, string> = {};
+    if (type.includes('application/x-www-form-urlencoded')) for (const [k, v] of new URLSearchParams(await c.req.text())) form[k] = v;
+    else if (type.includes('application/json')) Object.assign(form, (await c.req.json().catch(() => ({}))) as Record<string, string>);
+    if (form.client_secret !== undefined) return oauthErr(c, 401, 'invalid_client', 'finc clients are public (no secret)');
+    const base = oauthBase()!;
+    const resource = form.resource === undefined ? undefined : form.resource.replace(/\/$/, '').toLowerCase() === mcpResource(base).toLowerCase() ? mcpResource(base) : form.resource;
+    const t = now();
+    if (form.grant_type === 'authorization_code') {
+      const r = oauthCodes.redeem(form.code, { clientId: form.client_id, redirectUri: form.redirect_uri, verifier: form.code_verifier, resource }, t);
+      if (!r.ok) {
+        record(c, 'mcp.remote_refused', { step: 'token', reason: r.description }, { aggregate: true });
+        return oauthErr(c, 400, r.error, r.description);
+      }
+      const g = createGrant(state.db, r.grant, t);
+      record(c, 'mcp.remote_token', { app: r.grant.app, grant: g.grantId, kind: 'first' });
+      return c.json(g.tokens, 200, { 'Cache-Control': 'no-store', Pragma: 'no-cache' });
+    }
+    if (form.grant_type === 'refresh_token') {
+      const r = refreshGrant(state.db, form.refresh_token, form.client_id, resource, t);
+      if (!r.ok) {
+        if (r.reused) securityAlert(state.db, state.vault, 'an AI app connection was revoked: one of its refresh tokens was used twice (possible theft)', { kind: 'mcp.remote_refresh_reuse', actor: 'oauth', address: clientAddress(c), detail: { grant: r.reused.grantId }, at: t });
+        else record(c, 'mcp.remote_refused', { step: 'refresh', reason: r.description }, { aggregate: true });
+        return oauthErr(c, 400, r.error, r.description);
+      }
+      return c.json(r.tokens, 200, { 'Cache-Control': 'no-store', Pragma: 'no-cache' });
+    }
+    return oauthErr(c, 400, 'unsupported_grant_type', 'authorization_code or refresh_token');
+  });
+
+  // /mcp over Streamable HTTP: an access token for this resource, the privacy-checked tools, JSON answers only
+  const remoteMinute = new Map<number, { start: number; n: number }>();
+  const remoteBridge = (grant: { grantId: number; app: string }, c: Context) =>
+    new McpBridge(
+      {
+        tools: async () => ({ status: 200, body: { instructions: MCP_INSTRUCTIONS, tools: mcpToolList() } }),
+        call: async (name, args) => {
+          const out = runMcpTool(state.db, name, args, todayLocal(new Date(now())));
+          if (out.dropped.length) log.warn({ tool: name, dropped: out.dropped.slice(0, 10) }, 'mcp: the allow-list dropped fields');
+          record(c, 'mcp.call', { tool: name.slice(0, 40), args: Object.keys(args).slice(0, 10), error: out.isError, remote: true }, { aggregate: true, who: { actor: `oauth:${grant.grantId}`, actorName: grant.app } });
+          return { status: 200, body: { structured: out.structured, isError: out.isError } };
+        },
+      },
+      FINC_VERSION,
+    );
+  app.on(['GET', 'DELETE', 'PUT', 'PATCH'], '/mcp', (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    return c.json({ error: 'POST only' }, 405, { Allow: 'POST' });
+  });
+  app.post('/mcp', async (c) => {
+    const off = remoteOff(c);
+    if (off) return off;
+    const base = oauthBase()!;
+    // the providers call from their servers; a browser page (any Origin) may not (DNS rebinding, Streamable HTTP §Security)
+    if (c.req.header('origin') !== undefined) return c.json({ error: 'not for browsers' }, 403);
+    const challenge = (error?: string) => `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp", scope="${OAUTH_SCOPE}"${error ? `, error="${error}"` : ''}`;
+    const bearer = c.req.header('authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
+    if (!bearer) return c.json({ error: 'sign in through OAuth' }, 401, { 'WWW-Authenticate': challenge() });
+    const t = now();
+    const a = useAccessToken(state.db, bearer, mcpResource(base), t);
+    if (!a.ok) {
+      record(c, 'mcp.remote_refused', { step: 'mcp', reason: a.reason }, { aggregate: true });
+      if (a.reason === 'daily_limit') return c.json({ error: `this app reached its ${MCP_PER_DAY} calls for today` }, 429);
+      return c.json({ error: 'invalid or expired token' }, 401, { 'WWW-Authenticate': challenge('invalid_token') });
+    }
+    const w = remoteMinute.get(a.grantId);
+    if (w && t - w.start < 60_000) {
+      if (++w.n > MCP_PER_MINUTE) return c.json({ error: `at most ${MCP_PER_MINUTE} calls a minute` }, 429);
+    } else {
+      if (remoteMinute.size > 200) remoteMinute.clear();
+      remoteMinute.set(a.grantId, { start: t, n: 1 });
+    }
+    const msg = await c.req.json().catch(() => undefined);
+    if (msg === undefined) return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }, 400);
+    const out = await remoteBridge(a, c).handle(msg, { protocolVersion: c.req.header('mcp-protocol-version'), method: c.req.header('mcp-method'), name: c.req.header('mcp-name') });
+    if (!out.reply) return c.body(null, 202);
+    return c.json(out.reply, out.status);
   });
 
   // --- read models
@@ -1628,6 +1963,8 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
         newsSummary: getSetting(state.db, NEWS_SUMMARY_SETTING) !== 'off',
         // MCP: AI apps may read finc's privacy-checked tools (off by default)
         mcp: mcpEnabled(state.db),
+        // remote MCP: ChatGPT and Claude through OAuth with a passkey (off by default)
+        mcpRemote: mcpRemoteEnabled(state.db),
         chatModels: ai.provider === 'openai' || ai.provider === 'anthropic' ? CHAT_MODELS[ai.provider] : null,
       },
       schedule: state.scheduler.config,
@@ -1788,6 +2125,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
             newsSummary: z.boolean().optional(),
             // MCP: on only from home (not a passkey); off from anywhere
             mcp: z.boolean().optional(),
+            mcpRemote: z.boolean().optional(),
           })
           .optional(),
         // P1-09: days a paired device may go unused before its token is revoked; 0 = never
@@ -1911,6 +2249,12 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
           if (body.ai.mcp) requireTrusted(c);
           setMcpEnabled(state.db, body.ai.mcp);
           changed.push('ai.mcp');
+        }
+        if (body.ai.mcpRemote !== undefined) {
+          if (body.ai.mcpRemote) requireTrusted(c);
+          setMcpRemoteEnabled(state.db, body.ai.mcpRemote);
+          if (!body.ai.mcpRemote) closeConnectWindow(state.db);
+          changed.push('ai.mcpRemote');
         }
       }
     } finally {
@@ -2158,6 +2502,30 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const name = c.req.param('name');
     if (!revokeMcpToken(state.db, name, new Date(now()))) return c.json({ error: 'no such token' }, 404);
     record(c, 'mcp.token_revoked', { name: name.slice(0, 40) });
+    return c.json({ ok: true });
+  });
+  // remote MCP management: the window opens from home only (not a passkey session); revoking works from anywhere
+  api.get('/mcp/remote', (c) => {
+    const t = now();
+    const base = oauthBase();
+    return c.json({ enabled: mcpRemoteEnabled(state.db), endpoint: base ? `${base}/mcp` : null, windowUntil: connectWindowUntil(state.db, t), grants: listGrants(state.db, t) });
+  });
+  api.post('/mcp/remote/window', (c) => {
+    requireTrusted(c);
+    if (!mcpRemoteEnabled(state.db)) throw new HTTPException(409, { message: 'turn on remote AI apps first' });
+    if (!oauthBase()) throw new HTTPException(409, { message: 'set the public address first' });
+    const windowUntil = openConnectWindow(state.db, now());
+    record(c, 'mcp.remote_window', { minutes: 10 });
+    return c.json({ windowUntil });
+  });
+  api.delete('/mcp/remote/window', (c) => {
+    closeConnectWindow(state.db);
+    return c.json({ ok: true });
+  });
+  api.delete('/mcp/remote/grants/:id', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || !revokeGrant(state.db, id, now())) return c.json({ error: 'no such connection' }, 404);
+    record(c, 'mcp.remote_revoked', { grant: id });
     return c.json({ ok: true });
   });
   app.route('/api', api);
