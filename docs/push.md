@@ -16,7 +16,7 @@ finc had something for the phone, and when. (Telegram, by comparison, carries th
    JSON file in finc's `data` folder, then on the PC:
 
    ```
-   .inc push setup <file-name>.json
+   .\finc push setup <file-name>.json
    ```
 
    It stores the key in the vault (entry `push_fcm`) and deletes the file. Lock and unlock the vault so the worker reads
