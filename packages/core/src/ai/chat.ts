@@ -35,6 +35,7 @@ import { netWorthOverview } from '../hub/networth.js';
 import { hubOverview, todayLocal } from '../hub/overview.js';
 import { recurringOverview } from '../hub/recurring.js';
 import { listTransactions } from '../hub/transactions.js';
+import { projectToolResult } from './egress.js';
 
 /** The payment app a person-to-person row went through (the app's name only, never the person's). */
 export function paymentApp(description: string): 'Bit' | 'PayBox' | undefined {
@@ -798,7 +799,7 @@ function summarize(tool: string, args: Record<string, unknown>): string {
 }
 
 /** Per chat call: category names are approved up front; stored descriptions load once, on first use. */
-function egressContext(db: Db): EgressContext {
+export function egressContext(db: Db): EgressContext {
   // the labels and the fixed words the tools emit (kinds, buckets, frequencies, sides, line kinds)
   const allowed = new Set<string>([
     ...Object.values(MODEL_LABELS),
@@ -810,6 +811,7 @@ function egressContext(db: Db): EgressContext {
   ]);
   for (const c of db.$client.prepare('select key, name_he, name_en, group_key from category').all() as Array<Record<string, string | null>>) for (const v of Object.values(c)) if (v) allowed.add(v);
   let cache: { raw: Set<string>; norm: Set<string> } | undefined;
+  let ids: { long: string[]; last4: string[] } | undefined;
   return {
     allowed,
     descriptions: () => {
@@ -819,7 +821,64 @@ function egressContext(db: Db): EgressContext {
       }
       return cache;
     },
+    identifiers: () => (ids ??= accountIdentifiers(db)),
   };
+}
+
+/**
+ * The accounts' own identifiers (MCP design §5.2): external ids with a digit and 4+ characters, and digit groups of
+ * 4+ in account and institution names go in `long`; the last-4 values (and a 4-digit group of a name) in `last4`.
+ * Longest first, so a longer id is removed before a part of it.
+ */
+export function accountIdentifiers(db: Db): { long: string[]; last4: string[] } {
+  const long = new Set<string>();
+  const last4 = new Set<string>();
+  for (const r of db.$client.prepare('select external_id e from account_alias').all() as Array<{ e: string | null }>) {
+    const e = (r.e ?? '').trim();
+    if (e.length >= 4 && /\d/.test(e)) long.add(e);
+  }
+  const names = db.$client.prepare('select a.last4 l, a.display_name d, i.display_name n from account a left join institution i on i.id = a.institution_id').all() as Array<{ l: string | null; d: string | null; n: string | null }>;
+  for (const r of names) {
+    if (r.l && /^\d{4}$/.test(r.l.trim())) last4.add(r.l.trim());
+    for (const g of `${r.d ?? ''} ${r.n ?? ''}`.match(/\d{4,}/g) ?? []) (g.length === 4 ? last4 : long).add(g);
+  }
+  return { long: [...long].sort((a, b) => b.length - a.length), last4: [...last4] };
+}
+
+/** One chat or MCP lookup, as it may leave finc: what the model sees, and the paths the allow-list dropped. */
+export interface PrivateToolResult {
+  value: unknown;
+  /** paths only (never values), for a log line and the tests */
+  dropped: string[];
+}
+
+/**
+ * The one way a tool result leaves finc (chat and MCP, design mcp-server.md §4): the tool runs here, its result is
+ * cut down to the tool's allow-list (egress.ts), then every string goes through `guardEgress`. An unknown tool or a
+ * thrown error becomes a short `{error}`, never the exception's text (P2-09). Pass the same `egress` and `ctx` for
+ * every lookup of one conversation turn, so names approved by one lookup pass in the next.
+ */
+export function runPrivateTool(db: Db, name: string, args: Record<string, unknown>, today: string, session: { egress: EgressContext; ctx: ToolContext } = privateToolSession(db)): PrivateToolResult {
+  const tool = CHAT_TOOLS.find((t) => t.name === name);
+  if (!tool) return { value: { error: `unknown tool ${name}; available: ${CHAT_TOOLS.map((t) => t.name).join(', ')}` }, dropped: [] };
+  let raw: unknown;
+  try {
+    raw = tool.run(db, args, today, session.ctx);
+  } catch (e) {
+    raw = { error: `the lookup failed: ${errorSummary(e)}` };
+  }
+  const p = projectToolResult(name, raw);
+  return { value: guardEgress(p.value, session.egress), dropped: p.dropped };
+}
+
+/** A fresh egress context and tool context that share the names one turn approves. */
+export function privateToolSession(db: Db): { egress: EgressContext; ctx: ToolContext } {
+  const egress = egressContext(db);
+  const ctx = toolContext(db, (name) => {
+    egress.allowed.add(name);
+    return name;
+  });
+  return { egress, ctx };
 }
 
 /** Run one turn: the whole conversation goes in, the next assistant answer and its lookups come out. */
@@ -835,11 +894,7 @@ export async function chat(db: Db, provider: AiProvider, messages: ChatMessage[]
   const earlier = opts.previousLookups?.length ? `Lookups from earlier in this conversation (exact when made; may predate a sync since):\n${opts.previousLookups.map((l, i) => `e${i + 1}. ${l}`).join('\n')}\n\n` : '';
   const question = [...history].reverse().find((m) => m.role === 'user')!.content;
   const done = (answer: string, rounds: number, followUps: string[] = []): ChatResult => ({ answer, steps, model: provider.model, rounds, lookups, followUps });
-  const egress = egressContext(db);
-  const ctx = toolContext(db, (name) => {
-    egress.allowed.add(name);
-    return name;
-  });
+  const session = privateToolSession(db);
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     const user = [
       'Conversation:',
@@ -862,16 +917,9 @@ export async function chat(db: Db, provider: AiProvider, messages: ChatMessage[]
     // follow-ups only on a final answer (a lookup reply has none; the last-round fallback message gets none)
     if (r.answer !== undefined) return done(r.answer, round, r.followUps ?? []);
     if (round === MAX_ROUNDS) return done(UNREADABLE_REPLY[questionLang(history)], round);
-    const tool = CHAT_TOOLS.find((t) => t.name === r.tool);
     const args = r.args ?? {};
-    let result: unknown;
-    try {
-      result = tool ? tool.run(db, args, today, ctx) : { error: `unknown tool ${r.tool}; available: ${CHAT_TOOLS.map((t) => t.name).join(', ')}` };
-    } catch (e) {
-      // the provider gets the kind only, never the exception text (P2-09)
-      result = { error: `the lookup failed: ${errorSummary(e)}` };
-    }
-    result = guardEgress(result, egress);
+    // allow-list, then the egress guard; the provider gets an error's kind only, never its text (P2-09)
+    const result = runPrivateTool(db, r.tool ?? '', args, today, session).value;
     steps.push({ tool: r.tool ?? '?', args, summary: summarize(r.tool ?? '?', args) });
     lookups.push(`${JSON.stringify({ tool: r.tool, args })} → ${JSON.stringify(result).slice(0, LOOKUP_CHARS)}`);
   }

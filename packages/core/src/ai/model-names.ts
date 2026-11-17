@@ -176,17 +176,56 @@ export interface EgressContext {
   allowed: Set<string>;
   /** lazily loaded: every stored description_raw and description_norm */
   descriptions: () => { raw: Set<string>; norm: Set<string> };
+  /**
+   * lazily loaded: the accounts' own identifiers (MCP design §5.2). `long`: external ids and digit groups of 4+ from
+   * account names, removed wherever they appear; `last4`: card / account endings, removed next to a card or account
+   * word or a mask (a bare 4-digit number elsewhere is an amount or a year, and stays).
+   */
+  identifiers?: () => { long: string[]; last4: string[] };
+}
+
+const EMAIL = /[^\s@<>()"',;:]+@[^\s@<>()"',;:]+\.[a-z]{2,}/gi;
+const IBAN = /\b[A-Z]{2}\d{2}(?:[ -]?[A-Z0-9]){10,30}\b/g;
+/** a run of digits joined by spaces, dashes, dots or slashes */
+const DIGIT_RUN = /\d(?:[\d \-./]*\d)?/g;
+/** ISO dates and months, and the ".." between them in a range, are not identifiers */
+const DATE_PART = /\d{4}-\d{2}(?:-\d{2})?/g;
+const ESCAPE = /[.*+?^${}()|[\]\\]/g;
+const MASK_WORD = '(?:\\*{2,}|[xX]{3,}|•{2,}|כרטיס|חשבון|מסתיים ב|card|account|acct|ending(?: in)?|no\\.?|#)';
+
+/**
+ * Identifiers that may hide inside an allowed string (MCP design §5.2): emails, IBANs, digit runs of 5+ and digit
+ * groups that total 7+ digits once ISO dates are left aside (a phone, a card or an account number written with
+ * separators), the accounts' own external ids, and an account's last four digits next to a card / account word.
+ */
+export function scrubIdentifiers(text: string, ids?: { long: string[]; last4: string[] }): string {
+  let s = text;
+  // the accounts' own ids first, before a digit run inside one is cut and the rest of it would stay
+  if (ids) for (const id of ids.long) if (id && s.includes(id)) s = s.split(id).join('…');
+  s = s.replace(EMAIL, '…').replace(IBAN, '…');
+  s = s.replace(DIGIT_RUN, (m) => {
+    const digits = (m.replace(DATE_PART, '').match(/\d/g) ?? []).length;
+    if (digits >= 7) return '…';
+    return m.replace(/\d{5,}/g, '…');
+  });
+  if (ids) {
+    for (const l4 of ids.last4) {
+      if (!/^\d{4}$/.test(l4) || !s.includes(l4)) continue;
+      s = s.replace(new RegExp(`(${MASK_WORD}\\s*[:\\-]?\\s*)${l4.replace(ESCAPE, '\\$&')}(?!\\d)`, 'gi'), '$1…');
+    }
+  }
+  return s;
 }
 
 /**
- * The last check before a tool result is added to what the model sees: every string value with a
- * digit run of 5+ has it replaced by "…", and a string that is exactly a stored bank description
- * (raw or normalised) becomes "unnamed transaction" unless this call approved it as a name.
- * Numbers (amounts) are left alone.
+ * The last check before a tool result is added to what the model sees: every string value goes through
+ * `scrubIdentifiers` (digit runs of 5+, separated numbers, emails, IBANs, the accounts' own identifiers become "…"),
+ * and a string that is exactly a stored bank description (raw or normalised) becomes "unnamed transaction" unless
+ * this call approved it as a name. Numbers (amounts) are left alone.
  */
 export function guardEgress(value: unknown, ctx: EgressContext): unknown {
   if (typeof value === 'string') {
-    const s = value.replace(/\d{5,}/g, '…');
+    const s = scrubIdentifiers(value, ctx.identifiers?.());
     if (ctx.allowed.has(value) || ctx.allowed.has(s)) return s;
     const d = ctx.descriptions();
     const t = value.trim();
