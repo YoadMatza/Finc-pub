@@ -1225,3 +1225,47 @@ export interface HoldingNews {
   } | null;
   summaryUnavailableCode?: 'off' | 'no_provider' | 'vault_locked' | 'too_few' | 'busy' | 'unreachable' | 'rejected' | 'limited';
 }
+
+/** GET /api/holdings/:id/position (position view, step 2): shekel amounts in agorot, others in major units */
+export interface PositionTaxYear {
+  year: number;
+  takenAt: string;
+  lossesIls: number;
+  gains: Array<{ ratePct: number | null; amountIls: number }>;
+  taxWithheld: Array<{ ratePct: number | null; amountIls: number }>;
+  interestDividendIls: number | null;
+  interestDividendTaxIls: number | null;
+}
+export type PositionMissing = 'received_shares' | 'under_a_year' | 'no_benchmark' | 'benchmark_stale' | 'history_short' | 'not_foreign' | 'no_solution';
+export interface PositionLot {
+  tradeDate: string;
+  action: 'buy' | 'split' | 'dividend' | 'other';
+  actionText: string;
+  quantity: number;
+  costPrice: number;
+  currency: string;
+  costIls: number;
+}
+export interface PositionReady {
+  id: number;
+  available: true;
+  lotsAt: string | null;
+  taxYear: PositionTaxYear | null;
+  asOf: string | null;
+  priceSource: 'live' | 'bank';
+  currency: string;
+  quantity: number;
+  price: number;
+  rate: number;
+  lots: PositionLot[];
+  result: { costIls: number; valueIls: number; gainIls: number; gainPct: number | null; costOrig: number; valueOrig: number; gainOrig: number; gainOrigPct: number | null; source: 'bank_lots' };
+  perYear: { pct: number | null; missing: PositionMissing | null; since: string };
+  benchmark: { symbol: 'SPY'; asOf: string; valueIls: number; gainIls: number; gainPct: number | null; diffIls: number; diffPts: number | null } | null;
+  benchmarkMissing: PositionMissing | null;
+  dollarPart: { stockIls: number; fxIls: number; rateAtBuy: number; rateNow: number } | null;
+  dollarPartMissing: PositionMissing | null;
+  ifSold: { valueIls: number; feeIls: number; feeRate: number; taxIls: number; taxRate: number; taxBasis: 'estimate_nominal_gain'; proceedsIls: number; netGainIls: number; realisedLossIls: number | null };
+  whatIf: { moves: Array<{ movePct: number; valueIls: number; gainIls: number }>; breakEvenPrice: number; breakEvenMovePct: number | null };
+  weight: { ofPortfolioPct: number | null; ofNetWorthPct: number | null };
+}
+export type PositionPayload = PositionReady | { id: number; available: false; code: 'no_lots' | 'not_matched' | 'no_price'; lotsAt: string | null; taxYear: PositionTaxYear | null };

@@ -6,7 +6,8 @@ owner's own position** next to the general data (stock-insights, decision aids),
 everything in one place, or taken to a licensed advisor with exact numbers.
 
 Step 1 is built (2026-11-18, §4): the purchase lots and this year's tax summary are read on every FIBI sync. Step 2
-is built (2026-11-18, §5): the calculations and `GET /api/holdings/:id/position`. Step 3 (the view) is not built yet.
+is built (2026-11-18, §5): the calculations and `GET /api/holdings/:id/position`. Step 3 is built (2026-11-18, §6): the
+view in the stock panel.
 
 ## 1. What finc knows today, and what is missing
 
@@ -125,3 +126,13 @@ Core `insights/position.ts` (pure, tested on hand-computed fixtures) and `GET /a
   realised. This year's realised figures from the tax page come along as `taxYear`, not applied to the estimate.
 - **What if** −30/−10/+10/+30% and the break-even price at today's rate; **weight** of the securities account and of
   net worth.
+
+## 6. Step 3 as built (2026-11-18)
+
+`apps/web/src/components/PositionDetail.tsx`, under "Your position" in the stock panel (InsightsView), fetched on
+its own (kept 5 minutes) so a slow insights answer never holds it up. Blocks: gain or loss (shekels, the paper's
+currency, per year), against the S&P 500, the dollar's part (foreign papers only), if you sold today (with the
+bank's realised figures for this year), what if with the break-even price, the share of net worth, the purchases
+behind a toggle, the sources line and the disclaimer. A block that cannot be computed says why in one line; with no
+lots, or lots that fit no holding, the section is a single muted line. Hebrew and English texts; numbers are LTR
+isolates inside Hebrew sentences. Wording is facts only ("you would receive about"), never "you should".

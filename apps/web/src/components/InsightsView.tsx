@@ -12,6 +12,7 @@ import { citeMarks, factKey, headlineAnchor, headlineNumber, headlinesSourceKey,
 import { RATING_LABEL, analystsParts, changeText, monthYear, ratingColor, sharePct } from '../insightsAnalysts';
 import type { BoardSignal, HoldingInsights, HoldingNews, NewsHeadline, HoldingRuleResult, SignalsBoard, HoldingView, InsightCompanyNote, InsightFigure, InsightFiling, InsightPoint, LiveHoldingRow } from '../types';
 import { FILINGS_VISIBLE, TREND_ARROW, basisCaption, companyUnavailableReason, compactNumber, figureCurrency, filingText, isolateLtr, latestSecDate, marginTrend, noteText, openSecLink, periodLabel, placeNotes, ratioText, secLink, type MarginTrend } from '../insightsCompany';
+import { PositionDetail } from './PositionDetail';
 import { Amount, Bar, ErrorBox } from './ui';
 
 /** a payload that passed insightsReady: no `unavailable`, asOf set */
@@ -49,6 +50,7 @@ export function InsightsView({ p, r, share, onBack }: { p: HoldingView; r: LiveH
         {t('ins_back')}
       </button>
       <PositionSection p={p} r={r} share={share} />
+      {id !== undefined && <PositionDetail id={id} />}
       {d?.rules && <RulesSection rules={d.rules} symbol={p.symbol} />}
       {q.isPending ? (
         <Skeleton />
