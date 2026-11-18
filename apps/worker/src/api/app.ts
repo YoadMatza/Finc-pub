@@ -105,6 +105,11 @@ import {
   LIMIT_RANGES,
   hubOverview,
   holdingsOverview,
+  BENCHMARK_SYMBOL,
+  computePosition,
+  latestCostLots,
+  matchLots,
+  taxYears,
   type InsightsRow,
   HoldingRuleError,
   TEMPLATE_IDS,
@@ -230,6 +235,7 @@ import { log } from '../logger.js';
 import { HostKeyChangedError, NAS_ENTRY, OffsiteBusyError, OffsiteLockedError, OffsiteNotConfiguredError, OffsiteSetup, OffsiteSetupError, type OffsiteStatus, type SetupDeps } from '../offsite.js';
 import { rulesForPanel } from '../holding-rules.js';
 import { buildPanel, withinMs } from '../insights-panel.js';
+import { HISTORY_DEADLINE_MS } from '../insights.js';
 import type { FinnhubNews } from '../finnhub.js';
 import type { YahooNews } from '../yahoo-news.js';
 import type { WorkerState } from '../server.js';
@@ -1807,6 +1813,57 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const rules = rulesForPanel(state.db, row.symbol, out, state.prices?.cache() ?? emptyPriceCache(), now());
     // decision aids E: one documented reading per source and where they agree (core insights/signals.ts)
     return c.json({ ...out, rules, signals: signalsBoard(out, rules, cachedNewsTones(row.symbol)) });
+  });
+  // --- Position view, step 2 (research_notes/proposals/position-view.md §2): the owner's own result on one holding of
+  // an account's latest snapshot, from the bank's purchase lots (step 1), the current (live when fresh) value, SPY's
+  // history (the insights cache; only "SPY" goes to Yahoo) and the totals. Facts only; the tax is an estimate unless the
+  // bank shows it. 404 like the insights route; { available: false, code } when no lots were read or none fit.
+  api.get('/holdings/:id/position', async (c) => {
+    const refused = actorRefusal(c, insightsCounter, 'insights', 'insights.limited', 'insight requests', INSIGHTS_OUTSIDE_PER_HOUR);
+    if (refused) return refused;
+    const id = Number(c.req.param('id'));
+    if (!Number.isSafeInteger(id) || id <= 0) throw new HTTPException(404, { message: 'no such holding' });
+    const row = state.db.$client
+      .prepare(
+        `select h.id, h.account_id accountId, h.kind from holding_snapshot h
+           where h.id = ? and h.taken_at = (select max(taken_at) from holding_snapshot x where x.account_id = h.account_id)`,
+      )
+      .get(id) as { id: number; accountId: number; kind: string } | undefined;
+    if (!row || row.kind !== 'security') throw new HTTPException(404, { message: 'no such holding in the latest snapshot' });
+    const year = Number(todayLocal(new Date(now())).slice(0, 4));
+    const taxYear = taxYears(state.db, row.accountId).find((y) => y.year === year) ?? null;
+    const { lots, takenAt: lotsAt } = latestCostLots(state.db, row.accountId);
+    const overview = holdingsOverview(state.db, row.accountId);
+    const securities = overview.positions.filter((p) => p.kind === 'security');
+    const mine = matchLots(securities.map((p) => ({ id: p.id, quantity: p.quantity, price: p.price, currency: p.currency })), lots).get(id) ?? [];
+    const base = { id, lotsAt, taxYear };
+    if (!lots.length || !mine.length) return c.json({ ...base, available: false, code: lots.length ? 'not_matched' : 'no_lots' });
+    const opt = await liveOpt();
+    const live = accountLiveHoldings(state.db, row.accountId, opt.live?.cache ?? emptyPriceCache(), opt.live?.now ?? now());
+    const lr = live.rows.find((x) => x.id === id);
+    const snap = securities.find((p) => p.id === id)!;
+    const price = lr?.price ?? snap.price;
+    if (price === null || !(price > 0)) return c.json({ ...base, available: false, code: 'no_price' });
+    const spyP = state.insights ? withinMs(state.insights.history(BENCHMARK_SYMBOL, 'USD'), HISTORY_DEADLINE_MS, null) : Promise.resolve(null);
+    const spy = await spyP;
+    const fromLive = lr?.source === 'live';
+    const out = computePosition({
+      holding: {
+        quantity: snap.quantity,
+        price,
+        currency: snap.currency,
+        valueIls: lr?.valueIls ?? snap.valueIls,
+        rate: snap.currency === 'USD' && live.fx ? live.fx.rate : null,
+        priceSource: fromLive ? 'live' : 'bank',
+        asOf: fromLive ? live.asOf : overview.takenAt,
+      },
+      lots: mine,
+      spy: spy && spy.ok ? spy.history.bars.map((b) => ({ d: b.d, adj: b.adj })) : null,
+      today: todayLocal(new Date(now())),
+      portfolioIls: live.totalIls || overview.totalIls,
+      netWorthIls: netWorthOverview(state.db, opt).total,
+    });
+    return c.json(out.ok ? { ...base, available: true, ...out.view } : { ...base, available: false, code: out.code });
   });
   // --- decision aids C (research_notes/proposals/stock-decision-aids.md): a held stock's news and an AI summary of it.
   // Headlines from Finnhub (the same key and limits as analysts), else from Yahoo Finance (yahoo-news.ts; `headlinesSource`

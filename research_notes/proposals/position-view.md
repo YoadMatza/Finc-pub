@@ -5,8 +5,8 @@ advice; it also depends on goals, horizon and risk that finc does not know). It 
 owner's own position** next to the general data (stock-insights, decision aids), so the decision is made with
 everything in one place, or taken to a licensed advisor with exact numbers.
 
-Step 1 is built (2026-11-18, §4): the purchase lots and this year's tax summary are read on every FIBI sync. Steps 2
-and 3 are not built yet.
+Step 1 is built (2026-11-18, §4): the purchase lots and this year's tax summary are read on every FIBI sync. Step 2
+is built (2026-11-18, §5): the calculations and `GET /api/holdings/:id/position`. Step 3 (the view) is not built yet.
 
 ## 1. What finc knows today, and what is missing
 
@@ -99,3 +99,29 @@ The bank's names differ from the guesses above. What the pages hold (layout only
 
 Revised step 1: read the cost-lots page and the annual tax summary on every sync; trade history from תנועות בני"ע with
 a date range once its result layout is recorded.
+
+## 5. Step 2 as built (2026-11-18)
+
+Core `insights/position.ts` (pure, tested on hand-computed fixtures) and `GET /api/holdings/:id/position` (same
+404s and outside rate limit as the insights route).
+
+- **Joining lots to holdings.** The cost page names a paper by the bank's number and a shortened name, the holdings
+  page by ticker, and the two names often differ. A paper's lots are joined to the one holding with the same total
+  quantity, the same currency and a current price within 5%; a paper that fits none or several holdings, or a holding
+  two papers fit, stays unmatched (`available: false, code: 'not_matched'`). On the real portfolio all five papers
+  matched one holding each.
+- **Cost** is the bank's per-lot cost in shekels (purchase fee included); value is the live value when the quote is
+  fresh, else the bank's.
+- **Per year** (XIRR over the lot dates) only when every lot was bought and the first is a year old or more; shares
+  received (split, dividend in shares) have a result but no yearly rate and no market comparison
+  (`received_shares`).
+- **S&P 500**: each bought lot's dollar cost into SPY at the dividend-adjusted close of its date (or the last session
+  before it), valued at SPY's last close and today's rate; left out when SPY's last close is over 7 days old or its
+  5-year history starts after the first lot.
+- **The dollar's part**: the paper's move at today's rate, and the rest of the shekel result (the rate's move on the
+  money paid); the two add up to the result exactly. The rate at purchase is the bank's (shekel cost / dollar cost).
+- **If sold today**: fee rate 0 (decided), tax 25% of the nominal shekel gain after the fee, labelled an estimate
+  (the real gain the bank computes may differ; the bank's figure is binding); at a loss, the loss that would be
+  realised. This year's realised figures from the tax page come along as `taxYear`, not applied to the estimate.
+- **What if** −30/−10/+10/+30% and the break-even price at today's rate; **weight** of the securities account and of
+  net worth.
