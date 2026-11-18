@@ -66,7 +66,7 @@ describe('GET /api/holdings/:id/position', () => {
     expect(r.body.ifSold).toMatchObject({ taxIls: 5400, proceedsIls: 232_200 });
     expect(r.body.weight.ofPortfolioPct).toBe(100);
     expect(r.body.taxYear).toMatchObject({ year: 2026, lossesIls: -5000 });
-    expect(env.f.mock.calls.map(([u]) => u)).toEqual(['https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=5y&events=div%2Csplit']);
+    expect(env.f.mock.calls.map(([u]) => u)).toEqual(['https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=10y&events=div%2Csplit']);
   });
 
   it('says why when no lots were read or none fit the holding', async () => {

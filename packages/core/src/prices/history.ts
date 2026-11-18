@@ -27,6 +27,12 @@ const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 export const HISTORY_TIMEOUT_MS = Math.max(QUOTE_TIMEOUT_MS, 15_000);
 /** 5 years is about 1,257 sessions; anything far beyond that is not the answer asked for */
 export const HISTORY_MAX_BARS = 2000;
+/**
+ * The ranges finc asks for: 5 years for the insights panel, 10 years (about 2,515 sessions) for SPY in the position
+ * view, whose purchase lots can be older than 5 years (position-view.md §5).
+ */
+export type HistoryRange = '5y' | '10y';
+export const HISTORY_RANGE_MAX_BARS: Record<HistoryRange, number> = { '5y': HISTORY_MAX_BARS, '10y': 4000 };
 const MAX_EVENTS = 400;
 const TYPES = new Set(['EQUITY', 'ETF']);
 
@@ -65,7 +71,7 @@ const fail = (why: string): HistoryParse => ({ ok: false, why });
  * One chart answer (5 y of daily bars) to a PriceHistory, or the reason it was refused. `symbol` is the symbol asked
  * of Yahoo (yahooSymbol), `expectCurrency` the holding's currency.
  */
-export function parseHistory(body: unknown, symbol: string, expectCurrency: string, fetchedAt: number): HistoryParse {
+export function parseHistory(body: unknown, symbol: string, expectCurrency: string, fetchedAt: number, range: HistoryRange = '5y'): HistoryParse {
   const result = (body as { chart?: { result?: unknown } } | null)?.chart?.result;
   if (!Array.isArray(result) || result.length === 0) return fail('shape');
   const r = result[0] as {
@@ -91,7 +97,7 @@ export function parseHistory(body: unknown, symbol: string, expectCurrency: stri
   const adjs = r?.indicators?.adjclose?.[0]?.adjclose;
   if (!Array.isArray(ts) || !Array.isArray(closes) || !Array.isArray(adjs)) return fail('shape');
   if (ts.length !== closes.length || ts.length !== adjs.length) return fail('shape');
-  if (ts.length === 0 || ts.length > HISTORY_MAX_BARS) return fail('length');
+  if (ts.length === 0 || ts.length > HISTORY_RANGE_MAX_BARS[range]) return fail('length');
 
   const bars: DailyBar[] = [];
   let prevT = Number.NEGATIVE_INFINITY;
@@ -216,7 +222,8 @@ function inProgress(d: string, meta: Record<string, unknown>, tz: string, fetche
 export type HistoryResult = { ok: true; history: PriceHistory } | { ok: false; reason: 'invalid_symbol' | 'rate_limited' | 'server' | 'network' | 'not_found' | 'bad_answer'; status?: number; why?: string };
 
 /** Fetches 5 years of daily bars: query1 first, query2 when query1 fails with a server or network error. Never throws. */
-export async function fetchHistory(symbol: string, expectCurrency: string, opts: { fetch?: FetchFn; now?: () => number; timeoutMs?: number } = {}): Promise<HistoryResult> {
+export async function fetchHistory(symbol: string, expectCurrency: string, opts: { fetch?: FetchFn; now?: () => number; timeoutMs?: number; range?: HistoryRange } = {}): Promise<HistoryResult> {
+  const range = opts.range ?? '5y';
   if (!validSymbol(symbol)) return { ok: false, reason: 'invalid_symbol' };
   if (!/^[A-Z]{3}$/.test(expectCurrency)) return { ok: false, reason: 'bad_answer', why: 'currency' };
   const doFetch = opts.fetch ?? ((u, i) => fetch(u, i));
@@ -224,7 +231,7 @@ export async function fetchHistory(symbol: string, expectCurrency: string, opts:
   const asked = yahooSymbol(symbol);
   let last: HistoryResult = { ok: false, reason: 'network' };
   for (const host of YAHOO_HOSTS) {
-    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(asked)}?interval=1d&range=5y&events=div%2Csplit`;
+    const url = `https://${host}/v8/finance/chart/${encodeURIComponent(asked)}?interval=1d&range=${range}&events=div%2Csplit`;
     let res: Response;
     try {
       res = await doFetch(url, { method: 'GET', headers: { 'user-agent': USER_AGENT, accept: 'application/json' }, credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? HISTORY_TIMEOUT_MS) });
@@ -245,7 +252,7 @@ export async function fetchHistory(symbol: string, expectCurrency: string, opts:
     } catch {
       return { ok: false, reason: 'bad_answer', status: res.status, why: 'json' };
     }
-    const p = parseHistory(body, asked, expectCurrency, now());
+    const p = parseHistory(body, asked, expectCurrency, now(), range);
     return p.ok ? { ok: true, history: { ...p.history, symbol } } : { ok: false, reason: 'bad_answer', status: res.status, why: p.why };
   }
   return last;

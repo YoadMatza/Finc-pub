@@ -20,7 +20,7 @@
  *    if it is still behind the panel goes without the benchmark (panel.ts);
  *  - cross-check mismatches are counted once per ticker and session date (the log has counts only).
  */
-import { BENCHMARK_SYMBOL, type FetchFn, type HistoryResult, type PriceHistory, fetchHistory } from '@finc/core';
+import { BENCHMARK_SYMBOL, type FetchFn, type HistoryRange, type HistoryResult, type PriceHistory, fetchHistory } from '@finc/core';
 import { log as defaultLog } from './logger.js';
 
 export const HISTORY_TTL_MS = 6 * 60 * 60 * 1000;
@@ -107,22 +107,26 @@ export class InsightsService {
     }
   }
 
-  /** One symbol's history: from the cache (unless forced), the fetch in flight, or a new fetch. Never throws. */
-  history(symbol: string, currency: string, o: { force?: boolean } = {}): Promise<HistoryResult> {
-    const key = `${symbol}|${currency}`;
+  /**
+   * One symbol's history: from the cache (unless forced), the fetch in flight, or a new fetch. Never throws. The
+   * 10-year range (SPY for the position view) is cached apart from the 5-year one.
+   */
+  history(symbol: string, currency: string, o: { force?: boolean; range?: HistoryRange } = {}): Promise<HistoryResult> {
+    const range = o.range ?? '5y';
+    const key = range === '5y' ? `${symbol}|${currency}` : `${symbol}|${currency}|${range}`;
     const t = this.now();
     const hit = this.cache.get(key);
     if (!o.force && hit && t - hit.at < (hit.result.ok ? HISTORY_TTL_MS : HISTORY_FAIL_TTL_MS) && t >= hit.at) return Promise.resolve(hit.result);
     const running = this.inflight.get(key);
     if (running) return running;
     if (t < this.backoffUntil) return Promise.resolve({ ok: false, reason: 'rate_limited' } satisfies Failure);
-    const p = this.fetchOne(symbol, currency, key).finally(() => this.inflight.delete(key));
+    const p = this.fetchOne(symbol, currency, key, range).finally(() => this.inflight.delete(key));
     this.inflight.set(key, p);
     return p;
   }
 
-  private async fetchOne(symbol: string, currency: string, key: string): Promise<HistoryResult> {
-    const r: HistoryResult = await fetchHistory(symbol, currency, { ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}), now: this.now, timeoutMs: this.deps.timeoutMs ?? HISTORY_REQUEST_TIMEOUT_MS }).catch(() => ({ ok: false, reason: 'network' }) as const);
+  private async fetchOne(symbol: string, currency: string, key: string, range: HistoryRange): Promise<HistoryResult> {
+    const r: HistoryResult = await fetchHistory(symbol, currency, { ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}), now: this.now, timeoutMs: this.deps.timeoutMs ?? HISTORY_REQUEST_TIMEOUT_MS, range }).catch(() => ({ ok: false, reason: 'network' }) as const);
     if (r.ok) {
       this.failures = 0;
       this.backoffUntil = 0;

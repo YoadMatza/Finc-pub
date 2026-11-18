@@ -118,7 +118,7 @@ Core `insights/position.ts` (pure, tested on hand-computed fixtures) and `GET /a
   (`received_shares`).
 - **S&P 500**: each bought lot's dollar cost into SPY at the dividend-adjusted close of its date (or the last session
   before it), valued at SPY's last close and today's rate; left out when SPY's last close is over 7 days old or its
-  5-year history starts after the first lot.
+  history (10 years, fetched for this view; the panel's is 5) starts after the first lot.
 - **The dollar's part**: the paper's move at today's rate, and the rest of the shekel result (the rate's move on the
   money paid); the two add up to the result exactly. The rate at purchase is the bank's (shekel cost / dollar cost).
 - **If sold today**: fee rate 0 (decided), tax 25% of the nominal shekel gain after the fee, labelled an estimate

@@ -112,6 +112,8 @@ describe('parseHistory', () => {
   it('refuses more bars than 5 years can have', () => {
     const many: Bar[] = Array.from({ length: HISTORY_MAX_BARS + 1 }, (_, i) => [new Date(Date.parse('2010-01-01T14:30:00Z') + i * 86_400_000).toISOString(), 10, 10]);
     expect(why({ bars: many })).toBe('length');
+    // the 10-year range (SPY for the position view) takes them
+    expect(parseHistory(historyBody({ bars: many }), 'TEST1', 'USD', NOW, '10y').ok).toBe(true);
   });
   it('refuses bad dividends and splits', () => {
     expect(why({ dividends: { [sec('2026-11-09T14:30:00Z')]: { amount: -1 } } })).toBe('dividend');
@@ -190,6 +192,9 @@ describe('fetchHistory', () => {
     expect(init).toMatchObject({ method: 'GET', credentials: 'omit', redirect: 'error' });
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.stringify(init.headers)).not.toMatch(/finc|cookie/i);
+    const f10 = vi.fn<FetchFn>(async () => ok());
+    await fetchHistory('SPY', 'USD', { fetch: f10, now: () => NOW, range: '10y' });
+    expect(f10.mock.calls[0]![0]).toBe('https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=10y&events=div%2Csplit');
   });
   it('class shares go as BRK-B style and come back under the holding’s symbol', async () => {
     const f = vi.fn<FetchFn>(async () => ok(historyBody({ symbol: 'TSTX-B' })));

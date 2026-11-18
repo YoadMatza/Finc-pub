@@ -1816,7 +1816,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
   });
   // --- Position view, step 2 (research_notes/proposals/position-view.md §2): the owner's own result on one holding of
   // an account's latest snapshot, from the bank's purchase lots (step 1), the current (live when fresh) value, SPY's
-  // history (the insights cache; only "SPY" goes to Yahoo) and the totals. Facts only; the tax is an estimate unless the
+  // 10-year history (cached like the insights histories; only "SPY" goes to Yahoo) and the totals. Facts only; the tax is an estimate unless the
   // bank shows it. 404 like the insights route; { available: false, code } when no lots were read or none fit.
   api.get('/holdings/:id/position', async (c) => {
     const refused = actorRefusal(c, insightsCounter, 'insights', 'insights.limited', 'insight requests', INSIGHTS_OUTSIDE_PER_HOUR);
@@ -1844,7 +1844,7 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const snap = securities.find((p) => p.id === id)!;
     const price = lr?.price ?? snap.price;
     if (price === null || !(price > 0)) return c.json({ ...base, available: false, code: 'no_price' });
-    const spyP = state.insights ? withinMs(state.insights.history(BENCHMARK_SYMBOL, 'USD'), HISTORY_DEADLINE_MS, null) : Promise.resolve(null);
+    const spyP = state.insights ? withinMs(state.insights.history(BENCHMARK_SYMBOL, 'USD', { range: '10y' }), HISTORY_DEADLINE_MS, null) : Promise.resolve(null);
     const spy = await spyP;
     const fromLive = lr?.source === 'live';
     const out = computePosition({
