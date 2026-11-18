@@ -5,7 +5,8 @@ advice; it also depends on goals, horizon and risk that finc does not know). It 
 owner's own position** next to the general data (stock-insights, decision aids), so the decision is made with
 everything in one place, or taken to a licensed advisor with exact numbers.
 
-Nothing here is built yet.
+Step 1 is built (2026-11-18, §4): the purchase lots and this year's tax summary are read on every FIBI sync. Steps 2
+and 3 are not built yet.
 
 ## 1. What finc knows today, and what is missing
 
@@ -77,3 +78,24 @@ shows none, the S&P 500 comparison is in.
 1. OK to add the two bank pages to the sync (one explore run first, during a normal sync).
 2. Fee assumption when the trades page shows no fee: 0, or a rate you give.
 3. Include the "same money in the S&P 500" comparison (yes by default).
+
+## 4. Explore run results (2026-11-18, manual, old capital-market area)
+
+The bank's names differ from the guesses above. What the pages hold (layout only; dumps in `data/dumps/`):
+- **עלות נומינלית לחישוב רווח הון** (מסים): one row per purchase lot: security (name + number), action (buy on the
+  exchange, split/merge received, dividend in shares received), quantity, nominal cost price incl. the purchase fee,
+  cost in ILS, currency, execution date, average price (old lots only), current price, % change from cost. Lots of the
+  same security are listed separately by date. The bank labels these raw figures, not the full tax cost. **This fills
+  the main gap: purchase dates, per-lot cost and the fee.**
+- **פירוט אירועי מס - סיכום שנתי** (מסים): per tax year (three years shown): losses, gains by tax rate, tax withheld by
+  rate, interest and dividend income and the tax withheld on it. Realised results only.
+- **סימולציית מס לתיק** (מסים): holdings with an editable quantity; the tax figures appear only after "חשב לניירות
+  שנבחרו". Not needed: finc computes "if you sold today" itself.
+- **תנועות בני"ע**: needs a date range before it shows anything (the run recorded the empty form: filters for
+  security type, movement type and security). Sells come from here; one more run with a range, or the connector
+  fills the range itself.
+- **הוראות וביצועים** (new area): recent orders and executions only (security, action, executed quantity, price,
+  value, currency); not a history.
+
+Revised step 1: read the cost-lots page and the annual tax summary on every sync; trade history from תנועות בני"ע with
+a date range once its result layout is recorded.

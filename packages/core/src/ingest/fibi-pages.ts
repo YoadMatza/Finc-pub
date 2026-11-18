@@ -143,3 +143,135 @@ export function parseFibiFxText(text: string): { positions: HoldingRow[]; totalI
   }
   return { positions, totalIls };
 }
+
+// --- Position view, step 1 (research_notes/proposals/position-view.md §4, recorded 2026-11-18) ---
+
+/** One purchase lot from "מסים → עלות נומינלית לחישוב רווח הון". */
+export interface CostLotRow {
+  /** the bank's security number (public, not an account identifier) */
+  paperId: string;
+  /** the name as the page shows it (cut to ~15 characters by the bank) */
+  name: string;
+  action: 'buy' | 'split' | 'dividend' | 'other';
+  /** the bank's wording, e.g. "קניה בבורסה" */
+  actionText: string;
+  quantity: number;
+  /** nominal cost per unit in `currency`, purchase fee included */
+  costPrice: number;
+  /** the same cost per unit in shekels */
+  costPriceIls: number;
+  currency: string;
+  /** YYYY-MM-DD */
+  tradeDate: string;
+  avgPrice: number | null;
+  lastPrice: number | null;
+  changePct: number | null;
+}
+
+const LOT_HEADER = /שם ני["״]ע\s*\tסוג פעולה/;
+const LOT_ROW = /^\((\d{3,12})\)$/;
+const decimal = (c: string | undefined): number | null => {
+  const t = (c ?? '').replace(/,/g, '').trim();
+  if (!t) return null;
+  // the bank drops the leading zero: ".45"
+  if (!/^-?(\d+(\.\d*)?|\.\d+)$/.test(t)) return Number.NaN;
+  return Number(t);
+};
+const lotAction = (t: string): CostLotRow['action'] => (/קני/.test(t) ? 'buy' : /אחוד|פצול/.test(t) ? 'split' : /דיבידנד/.test(t) ? 'dividend' : 'other');
+
+/**
+ * The cost-lots page: after the header, each lot is a name line followed by a tab-separated row
+ * "(paper id) · action · quantity · cost · cost in ₪ · currency · date · average · price · % change".
+ * Fail-closed: `null` when the table header is missing or any row does not read cleanly, so a layout change never
+ * stores half a portfolio. An empty table (no securities) is `{ lots: [] }`.
+ */
+export function parseFibiCostLotsText(text: string): { lots: CostLotRow[] } | null {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => LOT_HEADER.test(l));
+  if (start < 0) return null;
+  const lots: CostLotRow[] = [];
+  let name = '';
+  for (const raw of lines.slice(start + 1)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const cells = raw.split('\t').map((c) => c.trim());
+    const id = cells[0]?.match(LOT_ROW);
+    if (!id) {
+      // a lone cell is the next lot's name; the header's own wrapped words come before the first lot and are dropped
+      if (cells.length === 1) name = line;
+      continue;
+    }
+    if (cells.length < 10 || !name) return null;
+    const [, actionText, q, cost, costIls, currency, date, avg, price, pct] = cells as [string, string, string, string, string, string, string, string, string, string];
+    const quantity = decimal(q);
+    const costPrice = decimal(cost);
+    const costPriceIls = decimal(costIls);
+    const d = date.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    const rest = [decimal(avg), decimal(price), decimal(pct)];
+    if (quantity === null || costPrice === null || costPriceIls === null || !d || !/^[A-Z]{3}$/.test(currency)) return null;
+    if ([quantity, costPrice, costPriceIls, ...rest].some((n) => n !== null && Number.isNaN(n))) return null;
+    lots.push({
+      paperId: id[1]!,
+      name,
+      action: lotAction(actionText),
+      actionText,
+      quantity,
+      costPrice,
+      costPriceIls,
+      currency,
+      tradeDate: `${d[3]}-${d[2]}-${d[1]}`,
+      avgPrice: rest[0] ?? null,
+      lastPrice: rest[1] ?? null,
+      changePct: rest[2] ?? null,
+    });
+    name = '';
+  }
+  return { lots };
+}
+
+/** The bank's tax-year summary ("מסים → פירוט אירועי מס"), realised results only; money in agorot. */
+export interface TaxYearSummary {
+  year: number;
+  lossesIls: number;
+  /** realised gains by tax rate (null = "אחוז אחר", another rate) */
+  gains: Array<{ ratePct: number | null; amountIls: number }>;
+  /** tax withheld by rate */
+  taxWithheld: Array<{ ratePct: number | null; amountIls: number }>;
+  /** not yet in the balances above */
+  interestDividendIls: number | null;
+  interestDividendTaxIls: number | null;
+}
+
+/**
+ * The annual summary page shows one year at a time (the select's first option, the current year, by default):
+ * label · securities column · (derivatives-only column). The securities column is read. Fail-closed like the lots.
+ */
+export function parseFibiTaxYearText(text: string): TaxYearSummary | null {
+  const lines = text.split('\n').map((l) => l.trim());
+  const year = lines.map((l) => l.match(/^שנת\s*-\s*(\d{4})$/)).find(Boolean);
+  if (!year) return null;
+  const first = (l: string): number | null => {
+    const v = decimal(l.split('\t')[1]);
+    return v === null || Number.isNaN(v) ? null : toMinor(v);
+  };
+  const rate = (l: string): number | null => {
+    const m = l.match(/%\s*([\d.]+)/);
+    return m ? Number(m[1]) : null;
+  };
+  let lossesIls: number | null = null;
+  const gains: TaxYearSummary['gains'] = [];
+  const taxWithheld: TaxYearSummary['taxWithheld'] = [];
+  let interestDividendIls: number | null = null;
+  let interestDividendTaxIls: number | null = null;
+  for (const l of lines) {
+    if (!l.includes('\t')) continue;
+    const v = first(l);
+    if (/^הפסדים\t/.test(l)) lossesIls = v;
+    else if (/^רווחים /.test(l) && v !== null) gains.push({ ratePct: rate(l), amountIls: v });
+    else if (/^מס שנוכה מריבית ודיבידנד\t/.test(l)) interestDividendTaxIls = v;
+    else if (/^מס שנוכה /.test(l) && v !== null) taxWithheld.push({ ratePct: rate(l), amountIls: v });
+    else if (/^הכנסות מריבית ודיבידנד\t/.test(l)) interestDividendIls = v;
+  }
+  if (lossesIls === null || !gains.length) return null;
+  return { year: Number(year[1]), lossesIls, gains, taxWithheld, interestDividendIls, interestDividendTaxIls };
+}

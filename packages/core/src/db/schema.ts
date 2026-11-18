@@ -546,6 +546,54 @@ export const holdingSnapshot = sqliteTable(
 );
 
 /**
+ * Purchase lots from the bank's "nominal cost for capital gains" page (position-view.md §4). A new set is written
+ * only when the lots change, so the latest taken_at is the current set and older ones show how it got there.
+ */
+export const costLotSnapshot = sqliteTable(
+  'cost_lot_snapshot',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    accountId: integer('account_id')
+      .notNull()
+      .references(() => account.id),
+    syncRunId: integer('sync_run_id'),
+    takenAt: text('taken_at').notNull(),
+    paperId: text('paper_id').notNull(), // the bank's security number
+    name: text('name').notNull(),
+    action: text('action').notNull(), // buy | split | dividend | other
+    actionText: text('action_text').notNull(),
+    quantity: real('quantity').notNull(),
+    costPrice: real('cost_price').notNull(), // per unit in `currency`, purchase fee included
+    costPriceIls: real('cost_price_ils').notNull(), // per unit in shekels
+    currency: text('currency').notNull(),
+    tradeDate: text('trade_date').notNull(), // YYYY-MM-DD
+    avgPrice: real('avg_price'),
+    lastPrice: real('last_price'),
+    changePct: real('change_pct'),
+  },
+  (t) => [index('cost_lot_snapshot_account_taken').on(t.accountId, t.takenAt)],
+);
+
+/** The bank's realised tax figures per year (position-view.md §4); one row per account and year, updated in place. */
+export const taxYearSummary = sqliteTable(
+  'tax_year_summary',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    accountId: integer('account_id')
+      .notNull()
+      .references(() => account.id),
+    year: integer('year').notNull(),
+    takenAt: text('taken_at').notNull(),
+    lossesIls: integer('losses_ils').notNull(), // agorot (negative = losses to offset)
+    gainsJson: text('gains_json').notNull(), // [{ ratePct, amountIls }]
+    taxWithheldJson: text('tax_withheld_json').notNull(),
+    interestDividendIls: integer('interest_dividend_ils'),
+    interestDividendTaxIls: integer('interest_dividend_tax_ils'),
+  },
+  (t) => [uniqueIndex('tax_year_summary_account_year').on(t.accountId, t.year)],
+);
+
+/**
  * The security log (security research P1-08): who signed in, paired, removed, unlocked, changed settings or locked
  * everything, and when. Append-only: triggers in migration 0013 refuse UPDATE and DELETE. Never holds secrets, tokens,
  * PINs, passwords, codes, amounts or merchant names. No retention for now (rows are tiny).

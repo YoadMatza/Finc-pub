@@ -130,3 +130,20 @@ describe('monthsAgo', () => {
     expect(ymd(monthsAgo(12, new Date(2026, 10, 30)))).toBe('2025-11-01');
   });
 });
+
+describe('FIBI position pages (position-view.md)', () => {
+  it('stores the purchase lots and the tax year on the securities account', async () => {
+    const lot = { paperId: '11111', name: 'ACME', action: 'buy' as const, actionText: 'קניה בבורסה', quantity: 10, costPrice: 20.5, costPriceIls: 75.1, currency: 'USD', tradeDate: '2025-02-03', avgPrice: null, lastPrice: 1, changePct: -95 };
+    const taxYear = { year: 2026, lossesIls: -100, gains: [{ ratePct: 25, amountIls: 0 }], taxWithheld: [], interestDividendIls: null, interestDividendTaxIls: null };
+    const scraper: NonNullable<ScrapeRunOptions['scraper']> = async () => ({
+      scraped: { success: true, accounts: [{ accountNumber: '000123456', txns: [] }] } as never,
+      extras: { investmentsIls: 100_00 },
+      position: { lots: [lot], taxYear },
+    });
+    const r = await runScrape(db, { ...base(), institutionId: 'beinleumi', scraper });
+    expect(r.success).toBe(true);
+    const lots = db.$client.prepare(`select l.paper_id p, a.type t from cost_lot_snapshot l join account a on a.id = l.account_id`).all();
+    expect(lots).toEqual([{ p: '11111', t: 'securities' }]);
+    expect(db.$client.prepare(`select year, losses_ils l from tax_year_summary`).all()).toEqual([{ year: 2026, l: -100 }]);
+  });
+});

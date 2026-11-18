@@ -18,20 +18,26 @@ import {
   finishRunError,
   finishRunOk,
   fromScraperAccount,
+  type CostLotRow,
   type HoldingRow,
   ingestBatch,
   type IngestStats,
   INSTITUTIONS,
   maskNumber,
   type NormalizedRow,
+  parseFibiCostLotsText,
   parseFibiFxText,
   parseFibiPortfolioText,
+  parseFibiTaxYearText,
   profilesDir,
   recordBalance,
+  recordCostLots,
   recordHoldings,
+  recordTaxYear,
   scraperSource,
   screenshotsDir,
   startRun,
+  type TaxYearSummary,
   toMinor,
   type Vault,
 } from '@finc/core';
@@ -128,6 +134,8 @@ export interface ScrapeOutput {
   scraped: ScraperScrapingResult;
   extras?: BeinleumiSummary;
   holdings?: { securities: HoldingRow[]; fx: HoldingRow[] };
+  /** FIBI's purchase lots and this year's tax figures (position-view.md); a page that did not read is null */
+  position?: { lots: CostLotRow[] | null; taxYear: TaxYearSummary | null };
 }
 
 /** Runs one job; throws when the browser or the scraper crashes (the caller records it as CRASH). */
@@ -207,7 +215,8 @@ export function localScraper(seams: { launchBrowser?: (opts: LaunchOptions) => P
       if (!scraped.success && job.debug) await captureDebugState(browser, job.institutionId);
       const extras = beinleumiExtras.get(job.institutionId);
       const holdings = beinleumiHoldings.get(job.institutionId);
-      return { scraped, ...(extras ? { extras } : {}), ...(holdings ? { holdings } : {}) };
+      const position = beinleumiPosition.get(job.institutionId);
+      return { scraped, ...(extras ? { extras } : {}), ...(holdings ? { holdings } : {}), ...(position ? { position } : {}) };
     } catch (e) {
       if (job.debug && b) await captureDebugState(b, job.institutionId);
       throw e;
@@ -216,6 +225,7 @@ export function localScraper(seams: { launchBrowser?: (opts: LaunchOptions) => P
       if (b) await b.close().catch(() => undefined);
       beinleumiExtras.delete(job.institutionId);
       beinleumiHoldings.delete(job.institutionId);
+      beinleumiPosition.delete(job.institutionId);
     }
   };
 }
@@ -358,6 +368,12 @@ export async function runScrape(db: Db | null, o: ScrapeRunOptions): Promise<Scr
           const n = recordHoldings(db, { accountId, runId, source: `${source}:${side.suffix}`, rows });
           log.info({ institution: o.institutionId, account: side.suffix, positions: n }, 'fibi: holdings recorded');
         }
+        // purchase lots and tax figures belong to the securities account (position-view.md); counts only in the log
+        if (side.suffix === 'securities' && out.position) {
+          const wrote = out.position.lots ? recordCostLots(db, { accountId, runId, lots: out.position.lots }) : false;
+          if (out.position.taxYear) recordTaxYear(db, { accountId, summary: out.position.taxYear });
+          log.info({ institution: o.institutionId, lots: out.position.lots?.length ?? null, lotsChanged: wrote, taxYear: out.position.taxYear?.year ?? null }, 'fibi: position pages recorded');
+        }
         result.accounts.push({ accountMasked: `${maskNumber(mainNumber)} ${side.suffix}`, accountId, txns: 0, pending: 0, balance: v / 100, created: false });
       }
     }
@@ -496,6 +512,7 @@ function patchBeinleumiFetch(scraper: object, institutionId: string, explore: bo
       }
     }
     if (page) await readBeinleumiHoldings(page, institutionId);
+    if (page) await readBeinleumiPosition(page, institutionId);
     if (explore && page) await exploreBeinleumi(page, institutionId);
     for (let attempt = 1; ; attempt++) {
       try {
@@ -519,6 +536,13 @@ const FIBI_ROUTES = {
 } as const;
 /** Positions read from FIBI's portfolio and foreign-currency pages, keyed by institution until runScrape stores them. */
 const beinleumiHoldings = new Map<string, { securities: HoldingRow[]; fx: HoldingRow[] }>();
+
+/** Shell routes of the two tax pages (recorded 2026-11-18; the /wps/ form of the same pages loads empty). */
+const FIBI_POSITION_ROUTES = {
+  lots: '#/Online/OnCapitalMarket/OnTaxes/AuthTaxesTaxesCalculation',
+  taxYear: '#/Online/OnCapitalMarket/OnTaxes/AuthTaxEventDetails2012',
+} as const;
+const beinleumiPosition = new Map<string, { lots: CostLotRow[] | null; taxYear: TaxYearSummary | null }>();
 
 /** The visible text of every frame on the page, joined. */
 async function frameTexts(page: Page): Promise<string> {
@@ -550,6 +574,39 @@ async function readBeinleumiHoldings(page: Page, institutionId: string): Promise
     beinleumiHoldings.set(institutionId, out);
   } catch (e) {
     log.warn({ institution: institutionId, err: e instanceof Error ? e.message : String(e) }, 'fibi: holdings pages not read');
+  } finally {
+    await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
+    await wait(2500);
+  }
+}
+
+/**
+ * After the holdings, read the purchase lots and this year's tax summary (position-view.md §4). The old-area pages
+ * load their table inside a frame after the shell settles, so wait for the table's own words (up to 30 s). Each page
+ * parses fail-closed; nothing about the contents goes to the log, only counts.
+ */
+async function readBeinleumiPosition(page: Page, institutionId: string): Promise<void> {
+  const landing = page.url();
+  const out: { lots: CostLotRow[] | null; taxYear: TaxYearSummary | null } = { lots: null, taxYear: null };
+  const marker = { lots: 'סוג פעולה', taxYear: 'הפסדים' } as const;
+  try {
+    for (const [key, route] of Object.entries(FIBI_POSITION_ROUTES) as Array<[keyof typeof FIBI_POSITION_ROUTES, string]>) {
+      await page.goto(new URL(route, landing).toString(), { waitUntil: 'networkidle2', timeout: 45_000 });
+      let text = '';
+      for (let waited = 0; waited < 30_000; waited += 3000) {
+        await wait(3000);
+        text = await frameTexts(page);
+        if (text.includes(marker[key])) break;
+      }
+      if (key === 'lots') out.lots = parseFibiCostLotsText(text)?.lots ?? null;
+      else out.taxYear = parseFibiTaxYearText(text);
+      const read = key === 'lots' ? out.lots !== null : out.taxYear !== null;
+      log.info({ institution: institutionId, page: key, read, ...(key === 'lots' && out.lots ? { lots: out.lots.length } : {}) }, 'fibi: position page read');
+    }
+    beinleumiPosition.set(institutionId, out);
+  } catch (e) {
+    log.warn({ institution: institutionId, err: e instanceof Error ? e.message : String(e) }, 'fibi: position pages not read');
+    if (out.lots || out.taxYear) beinleumiPosition.set(institutionId, out);
   } finally {
     await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
     await wait(2500);

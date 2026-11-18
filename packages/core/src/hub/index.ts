@@ -13,6 +13,7 @@ export * from './trends.js';
 export * from './events.js';
 export * from './networth.js';
 export * from './holdings.js';
+export * from './position.js';
 export * from './passkeys.js';
 export * from './security-log.js';
 export * from './limits.js';
