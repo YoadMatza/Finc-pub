@@ -344,14 +344,18 @@ function insights(db: Db, s: MonthSummary, month: string, today: string, isCurre
   for (const slot of s.expectedFixed.filter((x) => x.status === 'missing')) {
     out.push({ key: `missing:${slot.streamId}:${month}`, kind: 'missing_fixed', severity: 'warn', amount: slot.amount, name: merchantName(slot.merchantId), date: slot.expectedDate, streamId: slot.streamId });
   }
-  // refunds matched in the last 14 days
+  // refunds that arrived in the last 14 days and are matched to their purchase. The engine rebuilds its automatic refund
+  // links on every run (new id, new created_at), so neither can tell a new refund: the window is when the refund
+  // transaction was first stored, and the key is the two transactions, which stay the same across rebuilds (old refunds
+  // were re-alerted on every run, 2026-11-20). A rebuilt database stores every row again, so the refund must also be
+  // dated within the last 30 days: a refund from years ago is not news.
   const refunds = c
     .prepare(
-      `select l.id, l.amount, l.created_at, p.description_raw, p.id pid, m.name mname from link l join "transaction" p on p.id = l.to_txn_id left join merchant m on m.id = p.merchant_id
-       where l.type in ('refund','cancellation') and l.zone = 'auto' and coalesce(l.decision,'') <> 'rejected' and l.amount >= 500 and l.created_at >= ? order by l.created_at desc limit 5`,
+      `select l.from_txn_id fid, l.amount, f.created_at, p.description_raw, p.id pid, m.name mname from link l join "transaction" f on f.id = l.from_txn_id join "transaction" p on p.id = l.to_txn_id left join merchant m on m.id = p.merchant_id
+       where l.type in ('refund','cancellation') and l.zone = 'auto' and coalesce(l.decision,'') <> 'rejected' and l.amount >= 500 and f.created_at >= ? and f.txn_date >= ? order by f.created_at desc, l.id desc limit 5`,
     )
-    .all(`${addDays(today, -14)}T00:00:00`) as Array<{ id: number; amount: number; created_at: string; description_raw: string; pid: number; mname: string | null }>;
-  for (const r of refunds) out.push({ key: `refund:${r.id}`, kind: 'refund_matched', severity: 'ok', amount: r.amount, name: r.mname ?? r.description_raw, txnId: r.pid });
+    .all(`${addDays(today, -14)}T00:00:00`, addDays(today, -30)) as Array<{ fid: number; amount: number; created_at: string; description_raw: string; pid: number; mname: string | null }>;
+  for (const r of refunds) out.push({ key: `refund:${r.fid}:${r.pid}`, kind: 'refund_matched', severity: 'ok', amount: r.amount, name: r.mname ?? r.description_raw, txnId: r.pid });
 
   const uncat = c.prepare(`select count(*) n from "transaction" where excluded = 0 and status = 'completed' and category_id is null and cashflow_month = ?`).get(month) as { n: number };
   if (uncat.n) out.push({ key: `uncat:${month}:${uncat.n}`, kind: 'uncategorised', severity: 'info', count: uncat.n });

@@ -93,3 +93,37 @@ describe('stale_sync insight', () => {
     expect(insights().find((i) => i.kind === 'stale_sync')).toMatchObject({ key: 'stale:isracard:never', institutionId: 'isracard', count: 72 });
   });
 });
+
+describe('refund_matched insight', () => {
+  const ids = () => db.$client.prepare(`select id from "transaction" where description_raw = 'SUPERMARKET' order by txn_date`).all() as Array<{ id: number }>;
+  // what the refund engine does on every run: drop its automatic link and write it again (new id, new created_at)
+  const relink = (credit: number, purchase: number, at: string) => {
+    db.$client.prepare(`delete from link where type = 'refund' and source = 'auto' and from_txn_id = ?`).run(credit);
+    db.$client.prepare(`insert into link (type, from_txn_id, to_txn_id, amount, confidence, zone, source, created_at, explanation_json) values ('refund', ?, ?, 12000, 1, 'auto', 'auto', ?, '{}')`).run(credit, purchase, at);
+  };
+  const refunds = (now = NOW) => insights(now).filter((i) => i.kind === 'refund_matched');
+
+  it('keeps one key for a refund however often the engine rebuilds its link', () => {
+    const [purchase, credit] = ids().map((r) => r.id) as [number, number];
+    db.$client.prepare(`update "transaction" set amount_ils = 12000, created_at = '2026-11-05T09:00:00.000Z' where id = ?`).run(credit);
+    relink(credit, purchase, '2026-11-06T00:00:00.000Z');
+    const first = refunds();
+    relink(credit, purchase, '2026-11-09T00:00:00.000Z');
+    expect(refunds()).toEqual(first);
+    expect(first.map((i) => i.key)).toEqual([`refund:${credit}:${purchase}`]);
+  });
+
+  it('leaves out a refund stored long ago, even when its link was just rebuilt', () => {
+    const [purchase, credit] = ids().map((r) => r.id) as [number, number];
+    db.$client.prepare(`update "transaction" set amount_ils = 12000, created_at = '2024-06-01T09:00:00.000Z' where id = ?`).run(credit);
+    relink(credit, purchase, '2026-11-09T00:00:00.000Z');
+    expect(refunds()).toEqual([]);
+  });
+
+  it('leaves out an old refund that a rebuilt database stored again', () => {
+    const [purchase, credit] = ids().map((r) => r.id) as [number, number];
+    db.$client.prepare(`update "transaction" set amount_ils = 12000, txn_date = '2024-06-01', created_at = '2026-11-08T09:00:00.000Z' where id = ?`).run(credit);
+    relink(credit, purchase, '2026-11-09T00:00:00.000Z');
+    expect(refunds()).toEqual([]);
+  });
+});
