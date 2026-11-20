@@ -245,6 +245,25 @@ const KIND_TO_TYPE: Partial<Record<Insight['kind'], AlertType>> = {
   image_old: 'image_old',
 };
 
+/** At most one "transactions need a category" alert a day (UNCATEGORISED_MIN_GAP_MS). */
+export const UNCATEGORISED_MIN_GAP_MS = 24 * 3_600_000;
+
+/**
+ * Whether an "N transactions need a category" item (key `uncat:<month>:<n>`) is news. Its key changes with the count,
+ * so every new or freshly categorised row used to send it again (2026-11-20). Now it goes out only when more rows wait
+ * than the last such alert of the month said, and not within a day of the last one on any channel.
+ */
+function uncategorisedNews(db: Db, key: string, now: Date): boolean {
+  const [, month, n] = key.split(':');
+  const last = db.$client
+    .prepare(`select key, sent_at from alert_log where type = 'uncategorised' and ok = 1 order by sent_at desc limit 1`)
+    .get() as { key: string; sent_at: string } | undefined;
+  if (!last) return true;
+  if (now.getTime() - Date.parse(last.sent_at) < UNCATEGORISED_MIN_GAP_MS) return false;
+  const [, lastMonth, lastN] = last.key.split(':');
+  return lastMonth !== month || Number(n) > Number(lastN);
+}
+
 /** The alerts the hub would raise right now, as messages: attention items plus money out since the start point. */
 export function collectAlerts(db: Db, opts: { lang?: 'he' | 'en'; overview?: HubOverview; now?: Date } = {}): Alert[] {
   const lang = opts.lang ?? ((getSetting(db, 'ui.language') as 'he' | 'en' | null) ?? 'he');
@@ -253,6 +272,7 @@ export function collectAlerts(db: Db, opts: { lang?: 'he' | 'en'; overview?: Hub
   for (const i of h.attention) {
     const type = KIND_TO_TYPE[i.kind];
     if (!type) continue;
+    if (type === 'uncategorised' && !uncategorisedNews(db, i.key, opts.now ?? new Date())) continue;
     const text = alertText(i, lang);
     if (text) out.push({ type, key: i.key, text });
   }

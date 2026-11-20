@@ -6,7 +6,8 @@ import { ingestBatch } from '../ingest/ingest.js';
 import type { NormalizedRow } from '../ingest/types.js';
 import { setSetting } from '../ai/settings.js';
 import { currentMonth } from '../riseup/client.js';
-import { MONEY_SINCE_SETTING, alertConfig, alertText, collectAlerts, dispatchAlerts, inQuietHours, setAlertConfig, weeklySummaryText } from './index.js';
+import type { HubOverview } from '../hub/overview.js';
+import { MONEY_SINCE_SETTING, UNCATEGORISED_MIN_GAP_MS, alertConfig, alertText, collectAlerts, dispatchAlerts, inQuietHours, setAlertConfig, weeklySummaryText } from './index.js';
 
 const row = (date: string, amount: number, description: string): NormalizedRow => ({ externalAccountId: 'x', date, amount, description, status: 'completed', type: 'normal', identifier: `${description}${date}${amount}`, payload: {} });
 
@@ -168,5 +169,35 @@ describe('spending limit alerts (dispatcher)', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('uncategorised alert: news only, at most once a day', () => {
+  const NOW = new Date('2026-11-20T12:00:00Z');
+  const overview = (n: number) => ({ attention: [{ key: `uncat:2026-11:${n}`, kind: 'uncategorised', severity: 'info', count: n }], limit: null, month: '2026-11' }) as unknown as HubOverview;
+  const sent = (db: ReturnType<typeof openDb>, key: string, at: Date) =>
+    db.$client.prepare(`insert into alert_log (type, key, channel, text, ok, sent_at) values ('uncategorised', ?, 'push', 'x', 1, ?)`).run(key, at.toISOString());
+  const uncat = (db: ReturnType<typeof openDb>, n: number) => collectAlerts(db, { overview: overview(n), now: NOW, lang: 'en' }).filter((a) => a.type === 'uncategorised');
+  const ago = (ms: number) => new Date(NOW.getTime() - ms);
+
+  it('goes out the first time', () => {
+    expect(uncat(openDb(':memory:'), 3).map((a) => a.key)).toEqual(['uncat:2026-11:3']);
+  });
+
+  it('waits a day after the last one, even when the count grew', () => {
+    const db = openDb(':memory:');
+    sent(db, 'uncat:2026-11:3', ago(UNCATEGORISED_MIN_GAP_MS - 60_000));
+    expect(uncat(db, 7)).toEqual([]);
+  });
+
+  it('after a day: only when more rows wait than last time, or in a new month', () => {
+    const db = openDb(':memory:');
+    sent(db, 'uncat:2026-11:5', ago(UNCATEGORISED_MIN_GAP_MS + 60_000));
+    expect(uncat(db, 5)).toEqual([]);
+    expect(uncat(db, 2)).toEqual([]); // fewer: the owner is categorising
+    expect(uncat(db, 6).map((a) => a.key)).toEqual(['uncat:2026-11:6']);
+    const older = openDb(':memory:');
+    sent(older, 'uncat:2026-10:9', ago(UNCATEGORISED_MIN_GAP_MS + 60_000));
+    expect(uncat(older, 2).map((a) => a.key)).toEqual(['uncat:2026-11:2']);
   });
 });
