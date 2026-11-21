@@ -41,14 +41,30 @@ export function latestCostLots(db: Db, accountId: number): { takenAt: string | n
 
 /**
  * Write the lots when they differ from the current set (a buy, a sale, a split); prices alone changing does not
- * count, so two syncs a day do not grow the table. Returns whether a new set was written.
+ * count, so two syncs a day do not grow the table. Returns whether a new set was written. When the set is the same,
+ * its prices (last, average, change) are refreshed in place: matching lots to holdings compares the lot's price with
+ * the holding's from the same sync, and a price kept from days ago made moved papers stop matching (2026-11-21).
  */
 export function recordCostLots(db: Db, p: { accountId: number; runId: number | null; lots: CostLotRow[]; takenAt?: string }): boolean {
   const current = latestCostLots(db, p.accountId);
   const same = current.takenAt !== null && current.lots.map(lotKey).sort().join('\n') === p.lots.map(lotKey).sort().join('\n');
+  if (same) {
+    const fresh = new Map(p.lots.map((l) => [lotKey(l), l]));
+    db.transaction((tx) => {
+      for (const l of current.lots) {
+        const f = fresh.get(lotKey(l));
+        if (!f) continue;
+        tx.update(costLotSnapshot)
+          .set({ avgPrice: f.avgPrice, lastPrice: f.lastPrice, changePct: f.changePct })
+          .where(and(eq(costLotSnapshot.accountId, p.accountId), eq(costLotSnapshot.takenAt, current.takenAt!), eq(costLotSnapshot.paperId, l.paperId), eq(costLotSnapshot.tradeDate, l.tradeDate), eq(costLotSnapshot.quantity, l.quantity), eq(costLotSnapshot.action, l.action)))
+          .run();
+      }
+    });
+    return false;
+  }
   // An empty page is not written: a set needs at least one row, and the view only shows lots of papers that the
   // holdings page still lists, so lots left over after selling everything are never shown.
-  if (same || !p.lots.length) return false;
+  if (!p.lots.length) return false;
   const takenAt = p.takenAt ?? new Date().toISOString();
   db.transaction((tx) => {
     for (const l of p.lots) {

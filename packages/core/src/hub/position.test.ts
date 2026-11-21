@@ -18,6 +18,8 @@ describe('cost lots', () => {
     const { db, accountId } = setup();
     expect(recordCostLots(db, { accountId, runId: null, lots: [lot()], takenAt: '2026-11-18T10:00:00Z' })).toBe(true);
     expect(recordCostLots(db, { accountId, runId: null, lots: [lot({ lastPrice: 2, changePct: -90 })], takenAt: '2026-11-18T16:00:00Z' })).toBe(false);
+    // the same set: its prices are refreshed in place, so matching to the holding uses today's price
+    expect(latestCostLots(db, accountId)).toMatchObject({ takenAt: '2026-11-18T10:00:00Z', lots: [{ lastPrice: 2, changePct: -90 }] });
     expect(recordCostLots(db, { accountId, runId: null, lots: [lot(), lot({ paperId: '22222', tradeDate: '2026-11-18' })], takenAt: '2026-11-19T10:00:00Z' })).toBe(true);
     const cur = latestCostLots(db, accountId);
     expect(cur.takenAt).toBe('2026-11-19T10:00:00Z');
