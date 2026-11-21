@@ -155,3 +155,9 @@ Israel and abroad, commission, a derivatives fee, reason for a non-execution, re
 dividends and custody fees, no buys or sells. The purchases behind the current lots are older than the bank's limit,
 so cost stays on the lots page; this page can add sells, dividends and fees within the limit. The run now asks for 10
 years, then again from the date the bank names, with 1 year as the last fallback (checked against a local fake page).
+
+**Second run (2026-11-21):** 10 years refused, then from the bank's earliest date (about 2.9 years) one page of 41
+rows: dividends (most of them, in dollars), custody fees (in shekels), one executed exchange buy with its commission,
+five buy orders that did not execute (marked "שער לא תפס" in the reason column, so a parser must drop them), one
+received benefit and two dividend-tax rows. No sells in the window. What a parser here would add to the view:
+dividends received per paper, custody fees, and the real commission on a buy (instead of the fee assumption).
