@@ -111,7 +111,7 @@ export function registerSyncCommands(program: Command): void {
     .option('-m, --months <n>', 'months back to request', '12')
     .option('--headless', 'do not show the browser', false)
     .option('--debug', 'verbose scraper logs, no failure screenshot, 5 min timeouts', false)
-    .option('--explore', 'FIBI: also record the portal landing page, menu and foreign-currency / securities pages to data/dumps', false)
+    .option('--explore', 'FIBI: also record the trade history (10, 3 and 1 years back) to data/dumps; FINC_EXPLORE_ALL=1 adds the wider portal survey', false)
     .action(async (arg: string, opts: { months: string; headless: boolean; debug: boolean; explore: boolean }) => {
       const targets = parseTargets(arg);
       const vault = await openVaultInteractive();

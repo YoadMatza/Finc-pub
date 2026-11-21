@@ -275,3 +275,26 @@ export function parseFibiTaxYearText(text: string): TaxYearSummary | null {
   if (lossesIls === null || !gains.length) return null;
   return { year: Number(year[1]), lossesIls, gains, taxWithheld, interestDividendIls, interestDividendTaxIls };
 }
+
+/**
+ * The trade history page (תנועות בני"ע) shows nothing until it is given a range: its form takes dd/mm/yyyy dates
+ * (#TrFrom / #TrTill, recorded 2026-11-18). How far back the bank allows is unknown, so the explore run asks for 10
+ * years, then 3, then 1, and records what each answer looks like (position-view.md §7).
+ */
+export const FIBI_TRADE_RANGE_YEARS = [10, 3, 1] as const;
+
+/** A date as the bank's form writes it: dd/mm/yyyy. `iso` is yyyy-mm-dd. */
+export function fibiFormDate(iso: string): string {
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+/** The ranges to try, newest last day first: each from the same day `years` back (Feb 29 falls to Feb 28) to `today`. */
+export function fibiTradeRanges(today: string): Array<{ years: number; from: string; till: string }> {
+  const [y, m, d] = today.split('-').map(Number) as [number, number, number];
+  return FIBI_TRADE_RANGE_YEARS.map((years) => {
+    const last = new Date(Date.UTC(y - years, m, 0)).getUTCDate();
+    const from = `${y - years}-${String(m).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`;
+    return { years, from: fibiFormDate(from), till: fibiFormDate(today) };
+  });
+}

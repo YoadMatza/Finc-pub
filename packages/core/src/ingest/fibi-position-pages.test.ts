@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseFibiCostLotsText, parseFibiTaxYearText } from './fibi-pages.js';
+import { fibiFormDate, fibiTradeRanges, parseFibiCostLotsText, parseFibiTaxYearText } from './fibi-pages.js';
 
 // shaped like the pages recorded on 2026-11-18, with made-up papers, numbers and amounts
 const LOTS = [
@@ -95,5 +95,20 @@ describe('FIBI tax-year summary page', () => {
   it('fails closed without the year or the losses line', () => {
     expect(parseFibiTaxYearText(TAX.replace(/שנת - \d{4}/g, ''))).toBeNull();
     expect(parseFibiTaxYearText(TAX.replace('הפסדים\t-123.45', ''))).toBeNull();
+  });
+});
+
+describe('trade history ranges (explore run)', () => {
+  it('writes dates the way the bank form does and steps back 10, 3 and 1 years', () => {
+    expect(fibiFormDate('2026-11-21')).toBe('21/11/2026');
+    expect(fibiTradeRanges('2026-11-21')).toEqual([
+      { years: 10, from: '21/11/2016', till: '21/11/2026' },
+      { years: 3, from: '21/11/2023', till: '21/11/2026' },
+      { years: 1, from: '21/11/2025', till: '21/11/2026' },
+    ]);
+  });
+
+  it('a leap day falls back to the 28th in a year without one', () => {
+    expect(fibiTradeRanges('2028-02-29').map((r) => r.from)).toEqual(['28/02/2018', '28/02/2025', '28/02/2027']);
   });
 });

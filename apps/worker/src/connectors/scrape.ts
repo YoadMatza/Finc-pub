@@ -25,6 +25,7 @@ import {
   INSTITUTIONS,
   maskNumber,
   type NormalizedRow,
+  fibiTradeRanges,
   parseFibiCostLotsText,
   parseFibiFxText,
   parseFibiPortfolioText,
@@ -38,6 +39,7 @@ import {
   screenshotsDir,
   startRun,
   type TaxYearSummary,
+  todayLocal,
   toMinor,
   type Vault,
 } from '@finc/core';
@@ -513,7 +515,12 @@ function patchBeinleumiFetch(scraper: object, institutionId: string, explore: bo
     }
     if (page) await readBeinleumiHoldings(page, institutionId);
     if (page) await readBeinleumiPosition(page, institutionId);
-    if (explore && page) await exploreBeinleumi(page, institutionId);
+    if (explore && page) {
+      // the trade history with a date range (position-view.md §7); the wider portal survey only in manual mode or when
+      // asked for, since its pages are recorded already
+      await exploreBeinleumiTrades(page, institutionId);
+      if (process.env.FINC_EXPLORE_MANUAL === '1' || process.env.FINC_EXPLORE_ALL === '1') await exploreBeinleumi(page, institutionId);
+    }
     for (let attempt = 1; ; attempt++) {
       try {
         return await orig();
@@ -610,6 +617,93 @@ async function readBeinleumiPosition(page: Page, institutionId: string): Promise
   } finally {
     await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
     await wait(2500);
+  }
+}
+
+/** Shell route of the trade history (תנועות בני"ע); its form sits in a /wps/ frame inside the shell (recorded 2026-11-18). */
+const FIBI_TRADES_ROUTE = '#/Online/OnCapitalMarket/OnMyportfolio/OnlnNewSecuritiesTrans';
+
+/**
+ * Explore run for the trade history (position-view.md §7): the page shows nothing until it is given a date range, so
+ * fill the form's dates for 10, 3 and 1 years back, press its own "show" (הצג), and record each answer: the visible
+ * text and the markup of every frame. Everything goes to one file in data/dumps (owner-only, retention 14 days); the log
+ * gets counts only. Never throws: a failure is recorded in the file and the sync carries on.
+ */
+export async function exploreBeinleumiTrades(page: Page, institutionId: string): Promise<void> {
+  const landing = page.url();
+  const out: { recordedAt: string; route: string; attempts: Array<{ years: number; from: string; till: string; formFound: boolean; shown: boolean; frameUrls: string[]; dateLines: number; text: string; html: string; error?: string }> } = {
+    recordedAt: new Date().toISOString(),
+    route: FIBI_TRADES_ROUTE,
+    attempts: [],
+  };
+  const formFrame = () => page.frames().find((f) => f.url().includes('/wps/') && f.url().includes('OnlnNewSecuritiesTrans'));
+  const record = async () => {
+    let text = '';
+    let html = '';
+    for (const f of page.frames()) {
+      const t = (await f.evaluate("document.body ? document.body.innerText : ''").catch(() => '')) as string;
+      if (t.trim()) text += `\n### frame ${urlForLog(f.url())}\n${t}`;
+      const h = (await f.evaluate("document.body ? document.body.innerHTML : ''").catch(() => '')) as string;
+      if (h.trim()) html += `\n<!-- frame ${urlForLog(f.url())} -->\n${h}`;
+    }
+    return { text: text.slice(0, 200_000), html: html.slice(0, 1_500_000), frameUrls: page.frames().map((f) => urlForLog(f.url())) };
+  };
+  try {
+    for (const r of fibiTradeRanges(todayLocal())) {
+      const attempt: (typeof out.attempts)[number] = { ...r, formFound: false, shown: false, frameUrls: [], dateLines: 0, text: '', html: '' };
+      out.attempts.push(attempt);
+      try {
+        // from the landing page each time: going to the same shell route again would not reload the form's frame
+        if (out.attempts.length > 1) {
+          await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
+          await wait(2500);
+        }
+        await page.goto(new URL(FIBI_TRADES_ROUTE, landing).toString(), { waitUntil: 'networkidle2', timeout: 45_000 });
+        // the form's frame loads after the shell settles
+        let frame = formFrame();
+        for (let waited = 0; waited < 30_000; waited += 3000) {
+          frame = formFrame();
+          if (frame && (await frame.evaluate("!!document.getElementById('TrFrom')").catch(() => false))) break;
+          await wait(3000);
+        }
+        attempt.formFound = !!frame && ((await frame.evaluate("!!document.getElementById('TrFrom')").catch(() => false)) as boolean);
+        if (!frame || !attempt.formFound) {
+          Object.assign(attempt, await record());
+          continue;
+        }
+        // set both visible fields (and the datepickers when the page has them), then the page's own show()
+        const fill =
+          '(function(from, till){ var a=document.getElementById("TrFrom"), b=document.getElementById("TrTill"); a.value=from; b.value=till; ' +
+          'try { if (window.jQuery) { jQuery(a).trigger("change"); jQuery(b).trigger("change"); } } catch (e) {} ' +
+          'if (typeof window.show !== "function") return false; window.show(); return true; })(' +
+          JSON.stringify(r.from) +
+          ',' +
+          JSON.stringify(r.till) +
+          ')';
+        attempt.shown = (await frame.evaluate(fill).catch(() => false)) as boolean;
+        // show() posts the form: the frame reloads with the answer
+        await wait(3000);
+        await page.waitForNetworkIdle({ idleTime: 1500, timeout: 45_000 }).catch(() => undefined);
+        await wait(6000);
+        const g = await record();
+        Object.assign(attempt, g);
+        attempt.dateLines = g.text.split('\n').filter((l) => /\b\d{2}\/\d{2}\/\d{2,4}\b/.test(l)).length;
+      } catch (e) {
+        attempt.error = e instanceof Error ? e.message : String(e);
+      }
+      log.info({ institution: institutionId, years: r.years, formFound: attempt.formFound, shown: attempt.shown, dateLines: attempt.dateLines, chars: attempt.text.length, ...(attempt.error ? { err: attempt.error } : {}) }, 'explore: trade history range recorded');
+    }
+  } finally {
+    await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
+    await wait(2500);
+    try {
+      mkdirSync(dumpsDir(), { recursive: true });
+      const file = path.join(dumpsDir(), `${institutionId}-trades-explore-${stamp()}.json`);
+      writeFileSync(file, JSON.stringify(out, null, 2), { mode: 0o600 });
+      log.info({ file, attempts: out.attempts.length }, 'explore: trade history saved');
+    } catch (e) {
+      log.warn({ institution: institutionId, err: e instanceof Error ? e.message : String(e) }, 'explore: trade history not saved (run it with the host CLI: finc spike beinleumi --explore)');
+    }
   }
 }
 
