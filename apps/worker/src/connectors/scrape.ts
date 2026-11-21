@@ -31,15 +31,18 @@ import {
   parseFibiFxText,
   parseFibiPortfolioText,
   parseFibiTaxYearText,
+  parseFibiTradesText,
   profilesDir,
   recordBalance,
   recordCostLots,
   recordHoldings,
   recordTaxYear,
+  recordTrades,
   scraperSource,
   screenshotsDir,
   startRun,
   type TaxYearSummary,
+  type TradeRow,
   todayLocal,
   toMinor,
   type Vault,
@@ -137,8 +140,8 @@ export interface ScrapeOutput {
   scraped: ScraperScrapingResult;
   extras?: BeinleumiSummary;
   holdings?: { securities: HoldingRow[]; fx: HoldingRow[] };
-  /** FIBI's purchase lots and this year's tax figures (position-view.md); a page that did not read is null */
-  position?: { lots: CostLotRow[] | null; taxYear: TaxYearSummary | null };
+  /** FIBI's purchase lots, this year's tax figures and the trade history (position-view.md); a page that did not read is null */
+  position?: PositionPages;
 }
 
 /** Runs one job; throws when the browser or the scraper crashes (the caller records it as CRASH). */
@@ -375,7 +378,8 @@ export async function runScrape(db: Db | null, o: ScrapeRunOptions): Promise<Scr
         if (side.suffix === 'securities' && out.position) {
           const wrote = out.position.lots ? recordCostLots(db, { accountId, runId, lots: out.position.lots }) : false;
           if (out.position.taxYear) recordTaxYear(db, { accountId, summary: out.position.taxYear });
-          log.info({ institution: o.institutionId, lots: out.position.lots?.length ?? null, lotsChanged: wrote, taxYear: out.position.taxYear?.year ?? null }, 'fibi: position pages recorded');
+          const tradesAdded = out.position.trades ? recordTrades(db, { accountId, runId, rows: out.position.trades.rows }) : null;
+          log.info({ institution: o.institutionId, lots: out.position.lots?.length ?? null, lotsChanged: wrote, taxYear: out.position.taxYear?.year ?? null, trades: out.position.trades?.rows.length ?? null, tradesAdded }, 'fibi: position pages recorded');
         }
         result.accounts.push({ accountMasked: `${maskNumber(mainNumber)} ${side.suffix}`, accountId, txns: 0, pending: 0, balance: v / 100, created: false });
       }
@@ -550,7 +554,9 @@ const FIBI_POSITION_ROUTES = {
   lots: '#/Online/OnCapitalMarket/OnTaxes/AuthTaxesTaxesCalculation',
   taxYear: '#/Online/OnCapitalMarket/OnTaxes/AuthTaxEventDetails2012',
 } as const;
-const beinleumiPosition = new Map<string, { lots: CostLotRow[] | null; taxYear: TaxYearSummary | null }>();
+/** What the position pages gave on one sync; a page that did not read is null. */
+type PositionPages = { lots: CostLotRow[] | null; taxYear: TaxYearSummary | null; trades?: { rows: TradeRow[]; from: string; till: string; notExecuted: number } | null };
+const beinleumiPosition = new Map<string, PositionPages>();
 
 /** The visible text of every frame on the page, joined. */
 async function frameTexts(page: Page): Promise<string> {
@@ -595,7 +601,7 @@ async function readBeinleumiHoldings(page: Page, institutionId: string): Promise
  */
 async function readBeinleumiPosition(page: Page, institutionId: string): Promise<void> {
   const landing = page.url();
-  const out: { lots: CostLotRow[] | null; taxYear: TaxYearSummary | null } = { lots: null, taxYear: null };
+  const out: PositionPages = { lots: null, taxYear: null, trades: null };
   const marker = { lots: 'סוג פעולה', taxYear: 'הפסדים' } as const;
   try {
     for (const [key, route] of Object.entries(FIBI_POSITION_ROUTES) as Array<[keyof typeof FIBI_POSITION_ROUTES, string]>) {
@@ -611,10 +617,11 @@ async function readBeinleumiPosition(page: Page, institutionId: string): Promise
       const read = key === 'lots' ? out.lots !== null : out.taxYear !== null;
       log.info({ institution: institutionId, page: key, read, ...(key === 'lots' && out.lots ? { lots: out.lots.length } : {}) }, 'fibi: position page read');
     }
+    out.trades = await readBeinleumiTrades(page, landing, institutionId);
     beinleumiPosition.set(institutionId, out);
   } catch (e) {
     log.warn({ institution: institutionId, err: e instanceof Error ? e.message : String(e) }, 'fibi: position pages not read');
-    if (out.lots || out.taxYear) beinleumiPosition.set(institutionId, out);
+    if (out.lots || out.taxYear || out.trades) beinleumiPosition.set(institutionId, out);
   } finally {
     await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
     await wait(2500);
@@ -625,10 +632,93 @@ async function readBeinleumiPosition(page: Page, institutionId: string): Promise
 const FIBI_TRADES_ROUTE = '#/Online/OnCapitalMarket/OnMyportfolio/OnlnNewSecuritiesTrans';
 
 /**
- * Explore run for the trade history (position-view.md §7): the page shows nothing until it is given a date range, so
- * fill the form's dates, press its own "show" (הצג), and record each answer: the visible text and the markup of every
- * frame. First 10 years back; when the bank refuses and names its earliest date, again from that date; 1 year back as
- * the last fallback. Everything goes to one file in data/dumps (owner-only, retention 14 days); the log
+ * Open the trade history from the landing page, fill the form's dates (dd/mm/yyyy) and press the page's own "show"
+ * (הצג); the form's frame then reloads with the answer. From the landing page each time: going to the same shell route
+ * again would not reload the frame.
+ */
+async function showTradesRange(page: Page, landing: string, from: string, till: string): Promise<{ formFound: boolean; shown: boolean }> {
+  await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
+  await wait(2500);
+  await page.goto(new URL(FIBI_TRADES_ROUTE, landing).toString(), { waitUntil: 'networkidle2', timeout: 45_000 });
+  const formFrame = () => page.frames().find((f) => f.url().includes('/wps/') && f.url().includes('OnlnNewSecuritiesTrans'));
+  const hasForm = async () => {
+    const f = formFrame();
+    return !!f && ((await f.evaluate("!!document.getElementById('TrFrom')").catch(() => false)) as boolean);
+  };
+  // the form's frame loads after the shell settles
+  for (let waited = 0; waited < 30_000 && !(await hasForm()); waited += 3000) await wait(3000);
+  const frame = formFrame();
+  if (!frame || !(await hasForm())) return { formFound: false, shown: false };
+  // set both visible fields (and tell jQuery widgets they changed), then the page's own show()
+  const fill =
+    '(function(from, till){ var a=document.getElementById("TrFrom"), b=document.getElementById("TrTill"); a.value=from; b.value=till; ' +
+    'try { if (window.jQuery) { jQuery(a).trigger("change"); jQuery(b).trigger("change"); } } catch (e) {} ' +
+    'if (typeof window.show !== "function") return false; window.show(); return true; })(' +
+    JSON.stringify(from) +
+    ',' +
+    JSON.stringify(till) +
+    ')';
+  const shown = (await frame.evaluate(fill).catch(() => false)) as boolean;
+  await wait(3000);
+  await page.waitForNetworkIdle({ idleTime: 1500, timeout: 45_000 }).catch(() => undefined);
+  await wait(6000);
+  return { formFound: true, shown };
+}
+
+/**
+ * The ranges to ask for, one after another: 10 years back; when the bank refuses and names its earliest date, again
+ * from that date; 1 year back as the last fallback (position-view.md §7). `next` gets the answer's text and says what
+ * to ask next, or null when done.
+ */
+function tradeRangePlan(today: string): { first: { range: string; from: string; till: string }; next: (asked: string, text: string, failed: boolean) => { range: string; from: string; till: string } | null } {
+  const ranges = fibiTradeRanges(today);
+  const span = (years: number) => {
+    const r = ranges.find((x) => x.years === years)!;
+    return { from: r.from, till: r.till };
+  };
+  const asked = new Set<string>();
+  return {
+    first: { range: '10y', ...span(10) },
+    next: (range, text, failed) => {
+      asked.add(range);
+      const earliest = fibiEarliestTradeDate(text);
+      if (earliest && !asked.has('earliest')) return { range: 'earliest', from: earliest, till: span(10).till };
+      if ((earliest || failed) && !asked.has('1y')) return { range: '1y', ...span(1) };
+      return null;
+    },
+  };
+}
+
+/**
+ * Read the trade history on every FIBI sync (position-view.md §8): the widest range the bank allows, parsed
+ * fail-closed. Only counts go to the log. Null when the page did not read.
+ */
+async function readBeinleumiTrades(page: Page, landing: string, institutionId: string): Promise<{ rows: TradeRow[]; from: string; till: string; notExecuted: number } | null> {
+  const plan = tradeRangePlan(todayLocal());
+  for (let r: ReturnType<typeof plan.next> = plan.first; r; ) {
+    let text = '';
+    let failed = false;
+    try {
+      const s = await showTradesRange(page, landing, r.from, r.till);
+      failed = !s.formFound || !s.shown;
+      if (!failed) text = await frameTexts(page);
+    } catch {
+      failed = true;
+    }
+    const parsed = failed ? null : parseFibiTradesText(text);
+    if (parsed) {
+      log.info({ institution: institutionId, page: 'trades', range: r.range, rows: parsed.rows.length, notExecuted: parsed.notExecuted }, 'fibi: position page read');
+      return parsed;
+    }
+    r = plan.next(r.range, text, failed || !fibiEarliestTradeDate(text));
+  }
+  log.info({ institution: institutionId, page: 'trades', read: false }, 'fibi: position page read');
+  return null;
+}
+
+/**
+ * Explore run for the trade history (position-view.md §7): the same ranges as the sync reads, each answer recorded
+ * (the visible text and the markup of every frame) to one file in data/dumps (owner-only, retention 14 days); the log
  * gets counts only. Never throws: a failure is recorded in the file and the sync carries on.
  */
 export async function exploreBeinleumiTrades(page: Page, institutionId: string): Promise<void> {
@@ -638,7 +728,6 @@ export async function exploreBeinleumiTrades(page: Page, institutionId: string):
     route: FIBI_TRADES_ROUTE,
     attempts: [],
   };
-  const formFrame = () => page.frames().find((f) => f.url().includes('/wps/') && f.url().includes('OnlnNewSecuritiesTrans'));
   const record = async () => {
     let text = '';
     let html = '';
@@ -651,61 +740,21 @@ export async function exploreBeinleumiTrades(page: Page, institutionId: string):
     return { text: text.slice(0, 200_000), html: html.slice(0, 1_500_000), frameUrls: page.frames().map((f) => urlForLog(f.url())) };
   };
   try {
-    const ranges = fibiTradeRanges(todayLocal());
-    const span = (years: number) => {
-      const r = ranges.find((x) => x.years === years)!;
-      return { from: r.from, till: r.till };
-    };
-    const oneYear = span(1);
-    const queue: Array<{ range: string; from: string; till: string }> = [{ range: '10y', ...span(10) }];
-    for (let r = queue.shift(); r; r = queue.shift()) {
+    const plan = tradeRangePlan(todayLocal());
+    for (let r: ReturnType<typeof plan.next> = plan.first; r; ) {
       const attempt: (typeof out.attempts)[number] = { ...r, formFound: false, shown: false, frameUrls: [], dateLines: 0, text: '', html: '' };
       out.attempts.push(attempt);
       try {
-        // from the landing page each time: going to the same shell route again would not reload the form's frame
-        if (out.attempts.length > 1) {
-          await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);
-          await wait(2500);
-        }
-        await page.goto(new URL(FIBI_TRADES_ROUTE, landing).toString(), { waitUntil: 'networkidle2', timeout: 45_000 });
-        // the form's frame loads after the shell settles
-        let frame = formFrame();
-        for (let waited = 0; waited < 30_000; waited += 3000) {
-          frame = formFrame();
-          if (frame && (await frame.evaluate("!!document.getElementById('TrFrom')").catch(() => false))) break;
-          await wait(3000);
-        }
-        attempt.formFound = !!frame && ((await frame.evaluate("!!document.getElementById('TrFrom')").catch(() => false)) as boolean);
-        if (!frame || !attempt.formFound) {
-          Object.assign(attempt, await record());
-          continue;
-        }
-        // set both visible fields (and the datepickers when the page has them), then the page's own show()
-        const fill =
-          '(function(from, till){ var a=document.getElementById("TrFrom"), b=document.getElementById("TrTill"); a.value=from; b.value=till; ' +
-          'try { if (window.jQuery) { jQuery(a).trigger("change"); jQuery(b).trigger("change"); } } catch (e) {} ' +
-          'if (typeof window.show !== "function") return false; window.show(); return true; })(' +
-          JSON.stringify(r.from) +
-          ',' +
-          JSON.stringify(r.till) +
-          ')';
-        attempt.shown = (await frame.evaluate(fill).catch(() => false)) as boolean;
-        // show() posts the form: the frame reloads with the answer
-        await wait(3000);
-        await page.waitForNetworkIdle({ idleTime: 1500, timeout: 45_000 }).catch(() => undefined);
-        await wait(6000);
+        Object.assign(attempt, await showTradesRange(page, landing, r.from, r.till));
         const g = await record();
         Object.assign(attempt, g);
         attempt.dateLines = g.text.split('\n').filter((l) => /\b\d{2}\/\d{2}\/\d{2,4}\b/.test(l)).length;
       } catch (e) {
         attempt.error = e instanceof Error ? e.message : String(e);
       }
-      // refused for starting too early: ask again from the date the bank names, then 1 year as the last fallback
-      const earliest = fibiEarliestTradeDate(attempt.text);
-      const tried = (range: string) => out.attempts.some((a) => a.range === range) || queue.some((q) => q.range === range);
-      if (earliest && !tried('earliest')) queue.push({ range: 'earliest', from: earliest, till: r.till });
-      else if ((earliest || attempt.error || !attempt.formFound) && !tried('1y')) queue.push({ range: '1y', ...oneYear });
-      log.info({ institution: institutionId, range: r.range, refused: !!earliest, formFound: attempt.formFound, shown: attempt.shown, dateLines: attempt.dateLines, chars: attempt.text.length, ...(attempt.error ? { err: attempt.error } : {}) }, 'explore: trade history range recorded');
+      const refused = !!fibiEarliestTradeDate(attempt.text);
+      log.info({ institution: institutionId, range: r.range, refused, formFound: attempt.formFound, shown: attempt.shown, dateLines: attempt.dateLines, chars: attempt.text.length, ...(attempt.error ? { err: attempt.error } : {}) }, 'explore: trade history range recorded');
+      r = plan.next(r.range, attempt.text, refused || !!attempt.error || !attempt.formFound);
     }
   } finally {
     await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);

@@ -134,16 +134,18 @@ describe('monthsAgo', () => {
 describe('FIBI position pages (position-view.md)', () => {
   it('stores the purchase lots and the tax year on the securities account', async () => {
     const lot = { paperId: '11111', name: 'ACME', action: 'buy' as const, actionText: 'קניה בבורסה', quantity: 10, costPrice: 20.5, costPriceIls: 75.1, currency: 'USD', tradeDate: '2025-02-03', avgPrice: null, lastPrice: 1, changePct: -95 };
+    const trade = { paperId: '11111', name: 'ACME', symbol: 'ACME', action: 'dividend' as const, actionText: 'דיבידנד', valueDate: '2025-06-01', quantity: 10, price: 0.25, currency: 'USD', gross: 2.5, net: 2.13, taxIl: 0, taxAbroad: -0.37, commission: 0, registrationDate: '2025-06-01', paymentDate: null };
     const taxYear = { year: 2026, lossesIls: -100, gains: [{ ratePct: 25, amountIls: 0 }], taxWithheld: [], interestDividendIls: null, interestDividendTaxIls: null };
     const scraper: NonNullable<ScrapeRunOptions['scraper']> = async () => ({
       scraped: { success: true, accounts: [{ accountNumber: '000123456', txns: [] }] } as never,
       extras: { investmentsIls: 100_00 },
-      position: { lots: [lot], taxYear },
+      position: { lots: [lot], taxYear, trades: { from: '2024-01-01', till: '2026-11-21', notExecuted: 0, rows: [trade] } },
     });
     const r = await runScrape(db, { ...base(), institutionId: 'beinleumi', scraper });
     expect(r.success).toBe(true);
     const lots = db.$client.prepare(`select l.paper_id p, a.type t from cost_lot_snapshot l join account a on a.id = l.account_id`).all();
     expect(lots).toEqual([{ p: '11111', t: 'securities' }]);
     expect(db.$client.prepare(`select year, losses_ils l from tax_year_summary`).all()).toEqual([{ year: 2026, l: -100 }]);
+    expect(db.$client.prepare(`select t.paper_id p, t.action, a.type t from security_trade t join account a on a.id = t.account_id`).all()).toEqual([{ p: '11111', action: 'dividend', t: 'securities' }]);
   });
 });

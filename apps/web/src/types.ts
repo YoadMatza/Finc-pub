@@ -1267,5 +1267,18 @@ export interface PositionReady {
   ifSold: { valueIls: number; feeIls: number; feeRate: number; taxIls: number; taxRate: number; taxBasis: 'estimate_nominal_gain'; proceedsIls: number; netGainIls: number; realisedLossIls: number | null };
   whatIf: { moves: Array<{ movePct: number; valueIls: number; gainIls: number }>; breakEvenPrice: number; breakEvenMovePct: number | null };
   weight: { ofPortfolioPct: number | null; ofNetWorthPct: number | null };
+  /** where the sale fee comes from: the commission on past trades, or the assumed 0 */
+  feeSource: 'bank_trades' | 'assumed_zero';
+  /** the bank's trade history (about 3 years back); null when none was read yet. Amounts in their currency. */
+  trades: PositionTrades | null;
+}
+export interface PositionTrades {
+  since: string;
+  dividends: Array<{ currency: string; count: number; gross: number; net: number; tax: number; first: string; last: string }>;
+  sells: Array<{ date: string; quantity: number; price: number; currency: string; net: number; commission: number }>;
+  commissionRate: number | null;
+  commissionTrades: number;
+  /** agorot, negative */
+  custodyFees12mIls: number;
 }
 export type PositionPayload = PositionReady | { id: number; available: false; code: 'no_lots' | 'not_matched' | 'no_price'; lotsAt: string | null; taxYear: PositionTaxYear | null };

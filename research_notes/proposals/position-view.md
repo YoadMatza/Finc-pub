@@ -161,3 +161,18 @@ rows: dividends (most of them, in dollars), custody fees (in shekels), one execu
 five buy orders that did not execute (marked "שער לא תפס" in the reason column, so a parser must drop them), one
 received benefit and two dividend-tax rows. No sells in the window. What a parser here would add to the view:
 dividends received per paper, custody fees, and the real commission on a buy (instead of the fee assumption).
+
+## 8. Trade history in the sync and the view (built 2026-11-21)
+
+- Every FIBI sync now also reads תנועות בני"ע: 10 years asked, then from the date the bank names, 1 year as the
+  fallback. `parseFibiTradesText` reads the range line and the 17-column rows (the paper's name and number sit on the
+  lines above each row; custody-fee rows have none), fail-closed, and leaves out orders that never went through
+  (a non-execution reason), counting them. On the 2026-11-21 page: 36 rows read, 5 left out.
+- Rows go to `security_trade` (migration 0023), each kept once (`row_key` from its own fields) and never rewritten, so
+  history older than the bank's ~3-year window stays once seen.
+- The position route adds `trades` (`positionTrades`): this paper's dividends per currency (gross, net, tax), its
+  sales, the account's commission rate on past buys and sells, and its custody fees in the last 12 months. Papers tie to
+  the matched lots by number, leading zeros dropped. When a commission rate exists, "if you sold today" uses it
+  (`feeSource: 'bank_trades'`, decision 2) instead of the assumed 0.
+- The stock panel shows a "Dividends and costs" block: dividends net with their tax, any sales, the custody fees, and
+  how far back the bank's history reaches. Dividends are shown apart from "your result", which stays price-only.

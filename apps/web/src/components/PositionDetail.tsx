@@ -5,7 +5,7 @@ import { dayLabel, foreignMoney, money } from '../format';
 import { type Key, useI18n } from '../i18n';
 import { isolateLtr } from '../insightsCompany';
 import { gainTone, pctText, stamp, toneClass } from '../live';
-import type { PositionMissing, PositionPayload, PositionReady } from '../types';
+import type { PositionMissing, PositionPayload, PositionReady, PositionTrades } from '../types';
 
 const STALE_MS = 5 * 60 * 1000;
 
@@ -31,6 +31,8 @@ export function PositionDetail({ id }: { id: number }) {
 }
 
 const ils = (v: number, sign: 'never' | 'always' = 'never') => money(v, { sign, decimals: 0 });
+/** an amount in its own currency (major units), as the bank's trade history gives it */
+const inCur = (v: number, cur: string) => (cur === 'ILS' ? money(Math.round(v * 100), { decimals: 2 }) : foreignMoney(v, cur));
 const missingText = (t: (k: Key) => string, m: PositionMissing | null) => (m ? t(`pos_missing_${m}` as Key) : '–');
 
 function Block({ title, help, children }: { title: string; help?: string; children: ReactNode }) {
@@ -123,7 +125,7 @@ function Ready({ d }: { d: PositionReady }) {
 
       <Block title={t('pos_sold')}>
         <Row label={t('pos_value')}>{ils(s.valueIls)}</Row>
-        {s.feeRate > 0 && <Row label={t('pos_sold_fee', { p: `${(s.feeRate * 100).toFixed(2)}%` })}>−{ils(s.feeIls)}</Row>}
+        {s.feeRate > 0 && <Row label={t(d.feeSource === 'bank_trades' ? 'pos_sold_fee_bank' : 'pos_sold_fee', { p: `${(s.feeRate * 100).toFixed(2)}%` })}>−{ils(s.feeIls)}</Row>}
         <Row label={t('pos_sold_tax', { p: `${Math.round(s.taxRate * 100)}%` })}>{s.taxIls > 0 ? `−${ils(s.taxIls)}` : ils(0)}</Row>
         <Row label={t('pos_sold_proceeds')}>
           <span className="font-semibold">{ils(s.proceedsIls)}</span>
@@ -169,6 +171,8 @@ function Ready({ d }: { d: PositionReady }) {
         )}
       </Block>
 
+      {d.trades && <TradesBlock tr={d.trades} />}
+
       {d.weight.ofNetWorthPct !== null && <p className="text-xs text-muted">{t('pos_weight', { p: isolateLtr(`${d.weight.ofNetWorthPct.toFixed(1)}%`) })}</p>}
 
       <details className="text-xs">
@@ -202,5 +206,31 @@ function Ready({ d }: { d: PositionReady }) {
       </p>
       <p className="text-[11px] text-muted font-semibold">{t('pos_disclaimer')}</p>
     </section>
+  );
+}
+
+/** What the bank's trade history adds: this paper's dividends and sales, and the account's custody fees. */
+function TradesBlock({ tr }: { tr: PositionTrades }) {
+  const { t, locale } = useI18n();
+  return (
+    <Block title={t('pos_trades')}>
+      {tr.dividends.length ? (
+        tr.dividends.map((v) => (
+          <Row key={v.currency} label={t('pos_div', { n: String(v.count) })}>
+            {inCur(v.net, v.currency)}
+            {v.tax !== 0 && <span className="text-muted"> ({t('pos_div_tax', { v: inCur(Math.abs(v.tax), v.currency) })})</span>}
+          </Row>
+        ))
+      ) : (
+        <p className="text-muted">{t('pos_div_none')}</p>
+      )}
+      {tr.sells.map((x, i) => (
+        <Row key={`${x.date}-${i}`} label={t('pos_sell', { d: dayLabel(x.date, locale, { year: true }) })}>
+          {x.quantity.toLocaleString('en-US', { maximumFractionDigits: 4 })} × {inCur(x.price, x.currency)} = {inCur(x.net, x.currency)}
+        </Row>
+      ))}
+      {tr.custodyFees12mIls !== 0 && <Row label={t('pos_custody')}>−{ils(Math.abs(tr.custodyFees12mIls))}</Row>}
+      <p className="text-muted leading-relaxed">{t('pos_trades_note', { d: dayLabel(tr.since, locale, { year: true }) })}</p>
+    </Block>
   );
 }

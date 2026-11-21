@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fibiEarliestTradeDate, fibiFormDate, fibiTradeRanges, parseFibiCostLotsText, parseFibiTaxYearText } from './fibi-pages.js';
+import { fibiEarliestTradeDate, fibiFormDate, fibiTradeRanges, parseFibiTradesText, parseFibiCostLotsText, parseFibiTaxYearText } from './fibi-pages.js';
 
 // shaped like the pages recorded on 2026-11-18, with made-up papers, numbers and amounts
 const LOTS = [
@@ -115,5 +115,68 @@ describe('trade history ranges (explore run)', () => {
 
   it('a leap day falls back to the 28th in a year without one', () => {
     expect(fibiTradeRanges('2028-02-29').map((r) => r.from)).toEqual(['28/02/2018', '28/02/2027']);
+  });
+});
+
+// shaped like the page recorded on 2026-11-21, with made-up papers, numbers and amounts
+const TRADES = [
+  'פירוט תנועות לכל ניירות הערך\t\t\t',
+  'מתאריך\t01/01/2024\tעד תאריך\t21/11/2026',
+  'עמוד 1',
+  'שם נייר\tסימבול\tתאריך ערך\tתאור',
+  'פעולה\tכמות\tשער\tסוג',
+  'שם נייר',
+  '\t',
+  'סימבול',
+  '',
+  '\t\t10/01/2024\tדמי נהול פקדון ניע\t0\t0\t105\tש"ח\t0\t-15.00\t0\t0\t-15.00\t-15.00\t\t10/01/2024\t',
+  '',
+  'TEST ONE CORP',
+  '01111111',
+  '',
+  '\tTONE\t15/02/2024\tקניה בבורסה\t10.00\t100.00\t105\tUSD\t-1,000.00\t-1,005.00\t0\t0\t-5.00\t0\t\t15/02/2024\t19/02/2024',
+  '',
+  'TEST ONE CORP',
+  '01111111',
+  '',
+  '\tTONE\t20/03/2024\tקניה\t10.00\t1.00\t105\tUSD\t0\t0\t0\t0\t0\t0\tשער לא תפס\t20/03/2024\t',
+  '',
+  'TEST ONE CORP',
+  '01111111',
+  '',
+  '\tTONE\t01/06/2025\tדיבידנד\t10.00\t0.25\t105\tUSD\t2.50\t2.13\t0\t-0.37\t0\t0\t\t01/06/2025\t',
+  '',
+  'TEST TWO LTD',
+  '2222222',
+  '',
+  '\tTTWO\t05/09/2026\tמכירה בבורסה\t4.00\t50.00\t105\tUSD\t200.00\t196.00\t0\t0\t-4.00\t0\t\t05/09/2026\t09/09/2026',
+  'שם נייר\tסימבול\tתאריך ערך',
+  '\t\t',
+].join('\n');
+
+describe('trade history page (parseFibiTradesText)', () => {
+  it('reads the range, executed rows with their paper, and leaves out orders that never went through', () => {
+    const r = parseFibiTradesText(TRADES)!;
+    expect(r).toMatchObject({ from: '2024-01-01', till: '2026-11-21', notExecuted: 1 });
+    expect(r.rows.map((x) => [x.action, x.paperId, x.currency])).toEqual([
+      ['custody_fee', null, 'ILS'],
+      ['buy', '1111111', 'USD'],
+      ['dividend', '1111111', 'USD'],
+      ['sell', '2222222', 'USD'],
+    ]);
+    expect(r.rows[0]).toMatchObject({ name: null, symbol: null, net: -15, commission: -15, paymentDate: null });
+    expect(r.rows[1]).toEqual({ paperId: '1111111', name: 'TEST ONE CORP', symbol: 'TONE', action: 'buy', actionText: 'קניה בבורסה', valueDate: '2024-02-15', quantity: 10, price: 100, currency: 'USD', gross: -1000, net: -1005, taxIl: 0, taxAbroad: 0, commission: -5, registrationDate: '2024-02-15', paymentDate: '2024-02-19' });
+    expect(r.rows[2]).toMatchObject({ gross: 2.5, net: 2.13, taxAbroad: -0.37 });
+  });
+
+  it('is null without the range line or the header, or when a row does not read', () => {
+    expect(parseFibiTradesText(TRADES.replace('מתאריך\t01/01/2024', 'מתאריך 01/01/2024'))).toBeNull();
+    expect(parseFibiTradesText(TRADES.replace('שם נייר\tסימבול\tתאריך ערך\tתאור', 'something else'))).toBeNull();
+    expect(parseFibiTradesText(TRADES.replace('-1,000.00', '-1,000.x'))).toBeNull();
+    expect(parseFibiTradesText(TRADES.replace('\tUSD\t-1,000.00', '\tדולר\t-1,000.00'))).toBeNull();
+  });
+
+  it('an empty answer is no rows', () => {
+    expect(parseFibiTradesText(TRADES.split('\n').slice(0, 8).join('\n'))).toEqual({ from: '2024-01-01', till: '2026-11-21', rows: [], notExecuted: 0 });
   });
 });

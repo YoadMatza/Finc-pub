@@ -1,4 +1,4 @@
-import { type CostLotRow, type FetchFn, ensureAccount, openDb, recordCostLots, recordHoldings, recordTaxYear } from '@finc/core';
+import { type CostLotRow, type FetchFn, type TradeRow, ensureAccount, openDb, recordCostLots, recordHoldings, recordTaxYear, recordTrades } from '@finc/core';
 import { describe, expect, it, vi } from 'vitest';
 import { InsightsService } from '../insights.js';
 import type { WorkerState } from '../server.js';
@@ -24,7 +24,7 @@ function body(symbol: string): unknown {
 
 const lot = (o: Partial<CostLotRow> = {}): CostLotRow => ({ paperId: '1111111', name: 'TEST ONE', action: 'buy', actionText: 'קניה בבורסה', quantity: 12, costPrice: 50, costPriceIls: 180, currency: 'USD', tradeDate: '2026-01-05', avgPrice: null, lastPrice: 55, changePct: 10, ...o });
 
-function setup(o: { lots?: CostLotRow[] } = {}) {
+function setup(o: { lots?: CostLotRow[]; trades?: TradeRow[] } = {}) {
   const db = openDb(':memory:');
   const acc = ensureAccount(db, { institutionId: 'beinleumi', institutionKind: 'bank', institutionDisplayName: 'FIBI', source: 'scraper:beinleumi', externalId: 'b-securities', type: 'securities' }).accountId;
   const fx = ensureAccount(db, { institutionId: 'beinleumi', institutionKind: 'bank', institutionDisplayName: 'FIBI', source: 'scraper:beinleumi', externalId: 'b-fx', type: 'foreign_currency' }).accountId;
@@ -33,6 +33,7 @@ function setup(o: { lots?: CostLotRow[] } = {}) {
   recordHoldings(db, { accountId: acc, runId: null, source: 't', takenAt: LATEST, rows: [{ ...base, kind: 'security', symbol: 'TEST1', name: 'TEST1 Corp', quantity: 12, price: 55, currency: 'USD', valueIls: 237_600, valueOrig: 660 }] });
   recordHoldings(db, { accountId: fx, runId: null, source: 't', takenAt: LATEST, rows: [{ ...base, kind: 'currency', symbol: 'USD', name: 'Dollar', quantity: 100, price: 3.6, currency: 'USD', valueIls: 36_000, valueOrig: 100, costPrice: null }] });
   if (o.lots?.length) recordCostLots(db, { accountId: acc, runId: null, lots: o.lots });
+  if (o.trades?.length) recordTrades(db, { accountId: acc, runId: null, rows: o.trades });
   recordTaxYear(db, { accountId: acc, summary: { year: 2026, lossesIls: -5000, gains: [{ ratePct: 25, amountIls: 0 }], taxWithheld: [], interestDividendIls: null, interestDividendTaxIls: null } });
   const ids = db.$client.prepare('select id, symbol from holding_snapshot order by id').all() as Array<{ id: number; symbol: string }>;
   const id = (symbol: string) => ids.find((r) => r.symbol === symbol)!.id;
@@ -67,6 +68,17 @@ describe('GET /api/holdings/:id/position', () => {
     expect(r.body.weight.ofPortfolioPct).toBe(100);
     expect(r.body.taxYear).toMatchObject({ year: 2026, lossesIls: -5000 });
     expect(env.f.mock.calls.map(([u]) => u)).toEqual(['https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=1d&range=10y&events=div%2Csplit']);
+    // no trade history stored: the fee is the assumed 0
+    expect(r.body).toMatchObject({ feeSource: 'assumed_zero', trades: null });
+  });
+
+  it("adds the trade history: this paper's dividends, and the commission rate on past trades for the sale estimate", async () => {
+    const tr = (o: Partial<TradeRow>): TradeRow => ({ paperId: '1111111', name: 'TEST ONE', symbol: 'TONE', action: 'dividend', actionText: 'דיבידנד', valueDate: '2026-06-01', quantity: 12, price: 0.25, currency: 'USD', gross: 3, net: 2.55, taxIl: 0, taxAbroad: -0.45, commission: 0, registrationDate: '2026-06-01', paymentDate: null, ...o });
+    const env = setup({ lots: [lot()], trades: [tr({}), tr({ action: 'buy', actionText: 'קניה בבורסה', valueDate: '2026-01-05', price: 50, gross: -600, net: -603, taxAbroad: 0, commission: -3 })] });
+    const r = await env.get(`/api/holdings/${env.id('TEST1')}/position`);
+    // 3 / 600 = 0.5%; the fee on ₪2,376 is ₪11.88; tax 25% of (216 − 11.88)
+    expect(r.body).toMatchObject({ feeSource: 'bank_trades', ifSold: { feeRate: 0.005, feeIls: 1188, taxIls: 5103 } });
+    expect(r.body.trades).toMatchObject({ since: '2026-01-05', commissionTrades: 1, dividends: [{ currency: 'USD', count: 1, net: 2.55 }], sells: [] });
   });
 
   it('says why when no lots were read or none fit the holding', async () => {

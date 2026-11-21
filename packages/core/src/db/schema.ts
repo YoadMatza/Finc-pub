@@ -594,6 +594,41 @@ export const taxYearSummary = sqliteTable(
 );
 
 /**
+ * Executed rows of the bank's trade history (תנועות בני"ע; position-view.md §8): buys, sells, dividends, custody fees.
+ * The bank shows only about the last 3 years, so rows are kept as they are seen and never rewritten; `row_key` (the
+ * row's own fields) keeps a row from being stored twice. Amounts in `currency` major units as the bank shows them.
+ */
+export const securityTrade = sqliteTable(
+  'security_trade',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    accountId: integer('account_id')
+      .notNull()
+      .references(() => account.id),
+    syncRunId: integer('sync_run_id'),
+    firstSeenAt: text('first_seen_at').notNull(),
+    rowKey: text('row_key').notNull(),
+    paperId: text('paper_id'), // the bank's security number without leading zeros; null for account-level rows
+    name: text('name'),
+    symbol: text('symbol'),
+    action: text('action').notNull(), // buy | sell | dividend | custody_fee | benefit | other
+    actionText: text('action_text').notNull(),
+    valueDate: text('value_date').notNull(), // YYYY-MM-DD
+    quantity: real('quantity').notNull(),
+    price: real('price').notNull(),
+    currency: text('currency').notNull(),
+    gross: real('gross').notNull(),
+    net: real('net').notNull(),
+    taxIl: real('tax_il').notNull(),
+    taxAbroad: real('tax_abroad').notNull(),
+    commission: real('commission').notNull(),
+    registrationDate: text('registration_date'),
+    paymentDate: text('payment_date'),
+  },
+  (t) => [uniqueIndex('security_trade_account_row').on(t.accountId, t.rowKey), index('security_trade_account_paper').on(t.accountId, t.paperId)],
+);
+
+/**
  * The security log (security research P1-08): who signed in, paired, removed, unlocked, changed settings or locked
  * everything, and when. Append-only: triggers in migration 0013 refuse UPDATE and DELETE. Never holds secrets, tokens,
  * PINs, passwords, codes, amounts or merchant names. No retention for now (rows are tiny).

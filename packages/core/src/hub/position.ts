@@ -4,8 +4,8 @@
  */
 import { and, desc, eq } from 'drizzle-orm';
 import type { Db } from '../db/db.js';
-import { costLotSnapshot, taxYearSummary } from '../db/schema.js';
-import type { CostLotRow, TaxYearSummary } from '../ingest/fibi-pages.js';
+import { costLotSnapshot, securityTrade, taxYearSummary } from '../db/schema.js';
+import type { CostLotRow, TaxYearSummary, TradeRow } from '../ingest/fibi-pages.js';
 
 const LOT_KEYS = ['paperId', 'action', 'quantity', 'costPrice', 'costPriceIls', 'currency', 'tradeDate'] as const;
 const lotKey = (l: Pick<CostLotRow, (typeof LOT_KEYS)[number]>): string => LOT_KEYS.map((k) => String(l[k])).join('|');
@@ -95,5 +95,56 @@ export function taxYears(db: Db, accountId: number): Array<TaxYearSummary & { ta
       taxWithheld: JSON.parse(r.taxWithheldJson) as TaxYearSummary['taxWithheld'],
       interestDividendIls: r.interestDividendIls,
       interestDividendTaxIls: r.interestDividendTaxIls,
+    }));
+}
+
+const TRADE_KEYS = ['paperId', 'actionText', 'valueDate', 'quantity', 'price', 'currency', 'gross', 'net', 'commission', 'registrationDate'] as const;
+const tradeKey = (t: TradeRow): string => TRADE_KEYS.map((k) => String(t[k] ?? '')).join('|');
+
+/**
+ * Keep the trade history rows not stored yet (position-view.md §8). The bank shows only about 3 years, so older rows
+ * stay once seen; a row already stored is left as it is. Returns how many rows were new.
+ */
+export function recordTrades(db: Db, p: { accountId: number; runId: number | null; rows: TradeRow[]; seenAt?: string }): number {
+  const seenAt = p.seenAt ?? new Date().toISOString();
+  let added = 0;
+  db.transaction((tx) => {
+    for (const t of p.rows) {
+      const r = tx
+        .insert(securityTrade)
+        .values({ accountId: p.accountId, syncRunId: p.runId, firstSeenAt: seenAt, rowKey: tradeKey(t), paperId: t.paperId, name: t.name, symbol: t.symbol, action: t.action, actionText: t.actionText, valueDate: t.valueDate, quantity: t.quantity, price: t.price, currency: t.currency, gross: t.gross, net: t.net, taxIl: t.taxIl, taxAbroad: t.taxAbroad, commission: t.commission, registrationDate: t.registrationDate, paymentDate: t.paymentDate })
+        .onConflictDoNothing()
+        .run();
+      added += r.changes;
+    }
+  });
+  return added;
+}
+
+/** The account's stored trade rows, oldest first. */
+export function accountTrades(db: Db, accountId: number): TradeRow[] {
+  return db
+    .select()
+    .from(securityTrade)
+    .where(eq(securityTrade.accountId, accountId))
+    .orderBy(securityTrade.valueDate, securityTrade.id)
+    .all()
+    .map((r) => ({
+      paperId: r.paperId,
+      name: r.name,
+      symbol: r.symbol,
+      action: r.action as TradeRow['action'],
+      actionText: r.actionText,
+      valueDate: r.valueDate,
+      quantity: r.quantity,
+      price: r.price,
+      currency: r.currency,
+      gross: r.gross,
+      net: r.net,
+      taxIl: r.taxIl,
+      taxAbroad: r.taxAbroad,
+      commission: r.commission,
+      registrationDate: r.registrationDate,
+      paymentDate: r.paymentDate,
     }));
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CostLotRow } from '../ingest/fibi-pages.js';
-import { computePosition, matchLots, type PositionInput, xirr } from './position.js';
+import { computePosition, matchLots, positionTrades, type PositionInput, xirr } from './position.js';
 
 // made-up papers, prices and amounts; every expected number below is worked out by hand in the comment next to it
 const lot = (o: Partial<CostLotRow> = {}): CostLotRow => ({ paperId: '11111', name: 'ACME', action: 'buy', actionText: 'קניה בבורסה', quantity: 10, costPrice: 100, costPriceIls: 350, currency: 'USD', tradeDate: '2024-11-18', avgPrice: null, lastPrice: 150, changePct: 50, ...o });
@@ -119,5 +119,35 @@ describe('matchLots', () => {
     // no price on the lot: the quantity alone must point at one holding
     expect(matchLots([H(1, 10, 150), H(2, 3, 9)], [lot({ lastPrice: null })]).get(1)?.length).toBe(1);
     expect(matchLots([H(1, 10, 150)], [lot({ currency: 'EUR' })]).size).toBe(0);
+  });
+});
+
+describe("positionTrades (the bank's trade history)", () => {
+  const t = (o: Partial<import('../ingest/fibi-pages.js').TradeRow>): import('../ingest/fibi-pages.js').TradeRow => ({ paperId: '1111111', name: 'TEST ONE', symbol: 'TONE', action: 'dividend', actionText: 'דיבידנד', valueDate: '2025-06-01', quantity: 10, price: 0.25, currency: 'USD', gross: 2.5, net: 2.13, taxIl: 0, taxAbroad: -0.37, commission: 0, registrationDate: '2025-06-01', paymentDate: null, ...o });
+  const rows = [
+    t({ paperId: null, name: null, symbol: null, action: 'custody_fee', actionText: 'דמי נהול פקדון ניע', valueDate: '2026-10-10', currency: 'ILS', quantity: 0, price: 0, gross: 0, net: -15, taxAbroad: 0, commission: -15 }),
+    t({ paperId: null, name: null, symbol: null, action: 'custody_fee', actionText: 'דמי נהול פקדון ניע', valueDate: '2025-01-10', currency: 'ILS', quantity: 0, price: 0, gross: 0, net: -15, taxAbroad: 0, commission: -15 }),
+    t({ valueDate: '2024-03-01' }),
+    t({ valueDate: '2025-06-01', gross: 3, net: 2.55, taxAbroad: -0.45 }),
+    // a buy of another paper: its commission still tells the account's rate
+    t({ paperId: '2222222', action: 'buy', actionText: 'קניה בבורסה', valueDate: '2024-02-15', price: 100, gross: -1000, net: -1005, taxAbroad: 0, commission: -5 }),
+    t({ action: 'sell', actionText: 'מכירה בבורסה', valueDate: '2026-09-05', quantity: 4, price: 50, gross: 200, net: 199, taxAbroad: 0, commission: -1 }),
+    t({ paperId: '2222222', valueDate: '2025-07-01' }),
+  ];
+
+  it("sums this paper's dividends, lists its sales, and takes the commission rate from all trades", () => {
+    const r = positionTrades(rows, ['01111111'], '2026-11-21')!;
+    expect(r.since).toBe('2024-02-15');
+    expect(r.dividends).toEqual([{ currency: 'USD', count: 2, gross: 5.5, net: 4.68, tax: -0.82, first: '2024-03-01', last: '2025-06-01' }]);
+    expect(r.sells).toEqual([{ date: '2026-09-05', quantity: 4, price: 50, currency: 'USD', net: 199, commission: -1 }]);
+    // (5 + 1) / (1000 + 200)
+    expect(r).toMatchObject({ commissionRate: 0.005, commissionTrades: 2 });
+    // only the fee inside the last 12 months
+    expect(r.custodyFees12mIls).toBe(-1500);
+  });
+
+  it('null with no rows; no commission rate when no trade had one', () => {
+    expect(positionTrades([], ['1111111'], '2026-11-21')).toBeNull();
+    expect(positionTrades([rows[2]!], ['1111111'], '2026-11-21')).toMatchObject({ commissionRate: null, commissionTrades: 0, custodyFees12mIls: 0 });
   });
 });

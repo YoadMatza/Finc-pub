@@ -105,10 +105,12 @@ import {
   LIMIT_RANGES,
   hubOverview,
   holdingsOverview,
+  accountTrades,
   BENCHMARK_SYMBOL,
   computePosition,
   latestCostLots,
   matchLots,
+  positionTrades,
   taxYears,
   type InsightsRow,
   HoldingRuleError,
@@ -1847,6 +1849,9 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
     const spyP = state.insights ? withinMs(state.insights.history(BENCHMARK_SYMBOL, 'USD', { range: '10y' }), HISTORY_DEADLINE_MS, null) : Promise.resolve(null);
     const spy = await spyP;
     const fromLive = lr?.source === 'live';
+    // the bank's trade history (position-view.md §8): dividends and sales of this paper, the commission rate on past
+    // trades (instead of the assumed 0 for "if you sold today") and the account's custody fees
+    const trades = positionTrades(accountTrades(state.db, row.accountId), mine.map((l) => l.paperId), todayLocal(new Date(now())));
     const out = computePosition({
       holding: {
         quantity: snap.quantity,
@@ -1862,8 +1867,9 @@ export function createApp(state: WorkerState, opts: ApiOptions): { app: Hono; se
       today: todayLocal(new Date(now())),
       portfolioIls: live.totalIls || overview.totalIls,
       netWorthIls: netWorthOverview(state.db, opt).total,
+      ...(trades?.commissionRate != null ? { feeRate: trades.commissionRate } : {}),
     });
-    return c.json(out.ok ? { ...base, available: true, ...out.view } : { ...base, available: false, code: out.code });
+    return c.json(out.ok ? { ...base, available: true, ...out.view, feeSource: trades?.commissionRate != null ? 'bank_trades' : 'assumed_zero', trades } : { ...base, available: false, code: out.code });
   });
   // --- decision aids C (research_notes/proposals/stock-decision-aids.md): a held stock's news and an AI summary of it.
   // Headlines from Finnhub (the same key and limits as analysts), else from Yahoo Finance (yahoo-news.ts; `headlinesSource`

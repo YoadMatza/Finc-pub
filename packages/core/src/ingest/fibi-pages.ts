@@ -305,3 +305,89 @@ export function fibiTradeRanges(today: string): Array<{ years: number; from: str
     return { years, from: fibiFormDate(from), till: fibiFormDate(today) };
   });
 }
+
+/** One executed row of the trade history (תנועות בני"ע), amounts in `currency` major units as the bank shows them. */
+export interface TradeRow {
+  /** the bank's security number without leading zeros; null for account-level rows (custody fees) */
+  paperId: string | null;
+  name: string | null;
+  symbol: string | null;
+  action: 'buy' | 'sell' | 'dividend' | 'custody_fee' | 'benefit' | 'other';
+  /** the bank's wording, e.g. "קניה בבורסה" */
+  actionText: string;
+  /** YYYY-MM-DD */
+  valueDate: string;
+  quantity: number;
+  price: number;
+  /** ISO code; the page's ש"ח is ILS */
+  currency: string;
+  /** gross and net proceeds: negative for money out (a buy, a fee) */
+  gross: number;
+  net: number;
+  taxIl: number;
+  taxAbroad: number;
+  /** commission, negative as the bank shows it */
+  commission: number;
+  /** YYYY-MM-DD */
+  registrationDate: string | null;
+  paymentDate: string | null;
+}
+
+// the table repeats the first three titles below its last row; only the top header goes on to the action column
+const TRADE_HEADER = /^שם נייר\tסימבול\tתאריך ערך\tתאור/;
+const TRADE_ROW = /\t\d{2}\/\d{2}\/\d{4}\t/;
+const TRADE_RANGE = /מתאריך\t(\d{2})\/(\d{2})\/(\d{4})\tעד תאריך\t(\d{2})\/(\d{2})\/(\d{4})/;
+const isoOf = (c: string | undefined): string | null | undefined => {
+  const t = (c ?? '').trim();
+  if (!t) return null;
+  const d = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(t);
+  return d ? `${d[3]}-${d[2]}-${d[1]}` : undefined;
+};
+const tradeAction = (t: string): TradeRow['action'] =>
+  /^קני/.test(t) ? 'buy' : /^מכיר/.test(t) ? 'sell' : /^דיבידנד/.test(t) ? 'dividend' : /דמי נהול/.test(t) ? 'custody_fee' : /^הטבה/.test(t) ? 'benefit' : 'other';
+
+/**
+ * The trade history page after a range was shown (recorded 2026-11-21): a "from / till" line, the 17-column header,
+ * then per row the paper's name and its number on their own lines (none for account-level rows) and one tab-separated
+ * line: symbol · value date · action · quantity · price · account type · currency · gross · net · tax in Israel · tax
+ * abroad · commission · derivatives fee · reason for non-execution · registration date · payment date.
+ * Rows with a non-execution reason (an order that never went through) are left out and counted. Fail-closed: `null`
+ * when the range line or the header is missing or any row does not read cleanly.
+ */
+export function parseFibiTradesText(text: string): { from: string; till: string; rows: TradeRow[]; notExecuted: number } | null {
+  const range = TRADE_RANGE.exec(text);
+  if (!range) return null;
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => TRADE_HEADER.test(l));
+  if (start < 0) return null;
+  const rows: TradeRow[] = [];
+  let notExecuted = 0;
+  let name: string | null = null;
+  let paperId: string | null = null;
+  for (const raw of lines.slice(start + 1)) {
+    if (!TRADE_ROW.test(raw)) {
+      const t = raw.trim();
+      if (/^\d{5,12}$/.test(t)) paperId = t.replace(/^0+/, '') || '0';
+      else if (t && !t.includes('\t') && paperId === null) name = t;
+      continue;
+    }
+    const c = raw.split('\t').map((x) => x.trim());
+    if (c.length < 17) return null;
+    const [, symbol, vd, actionText, q, p, , cur, gross, net, taxIl, taxAbroad, commission, , reason, reg, pay] = c as string[];
+    const nums = [q, p, gross, net, taxIl, taxAbroad, commission].map((x) => decimal(x) ?? 0);
+    const valueDate = isoOf(vd);
+    const registrationDate = isoOf(reg);
+    const paymentDate = isoOf(pay);
+    if (!valueDate || registrationDate === undefined || paymentDate === undefined || nums.some((n) => Number.isNaN(n)) || !actionText) return null;
+    const currency = /ש["״]ח/.test(cur ?? '') ? 'ILS' : (cur ?? '');
+    if (!/^[A-Z]{3}$/.test(currency)) return null;
+    if (reason) notExecuted++;
+    else {
+      const [quantity, price, g, n, ti, ta, com] = nums as [number, number, number, number, number, number, number];
+      rows.push({ paperId, name: paperId ? name : null, symbol: symbol || null, action: tradeAction(actionText), actionText, valueDate, quantity, price, currency, gross: g, net: n, taxIl: ti, taxAbroad: ta, commission: com, registrationDate, paymentDate });
+    }
+    name = null;
+    paperId = null;
+  }
+  return { from: `${range[3]}-${range[2]}-${range[1]}`, till: `${range[6]}-${range[5]}-${range[4]}`, rows, notExecuted };
+}

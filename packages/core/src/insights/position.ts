@@ -14,7 +14,7 @@
  *  - what if: the value at −30/−10/+10/+30%, and the price at which the shekel result is zero;
  *  - weight: share of the securities account and of net worth.
  */
-import type { CostLotRow } from '../ingest/fibi-pages.js';
+import type { CostLotRow, TradeRow } from '../ingest/fibi-pages.js';
 
 /** the general rate on capital gains for an individual in Israel (an estimate; the bank's calculation is binding) */
 export const CAPITAL_GAINS_TAX_RATE = 0.25;
@@ -262,5 +262,56 @@ export function computePosition(p: PositionInput): { ok: true; view: PositionVie
         ofNetWorthPct: p.netWorthIls && p.netWorthIls > 0 ? pct(h.valueIls, p.netWorthIls) : null,
       },
     },
+  };
+}
+
+/** What the bank's trade history adds to one holding's view (position-view.md §8). Amounts in their currency, 2 decimals. */
+export interface PositionTrades {
+  /** the oldest stored row of the account: the history reaches back this far (the bank shows about 3 years) */
+  since: string;
+  /** dividends on this paper, per currency: gross, net after tax, and the tax withheld (Israel and abroad, negative) */
+  dividends: Array<{ currency: string; count: number; gross: number; net: number; tax: number; first: string; last: string }>;
+  /** sales of this paper */
+  sells: Array<{ date: string; quantity: number; price: number; currency: string; net: number; commission: number }>;
+  /** the commission the bank charged on the account's buys and sells, as a fraction of their amount; null when none */
+  commissionRate: number | null;
+  /** how many trades that rate is from */
+  commissionTrades: number;
+  /** the account's custody fees in the last 12 months, agorot (negative) */
+  custodyFees12mIls: number;
+}
+
+/**
+ * The trade history for one holding: its papers' dividends and sales, and two account-level facts, the commission rate
+ * on past trades (used for "if you sold today" instead of the assumed 0) and the custody fees of the last 12 months.
+ * Null when no rows were stored. `paperIds` are the matched lots' numbers; leading zeros do not count.
+ */
+export function positionTrades(rows: TradeRow[], paperIds: string[], today: string): PositionTrades | null {
+  if (!rows.length) return null;
+  const mine = new Set(paperIds.map((x) => x.replace(/^0+/, '')));
+  const own = rows.filter((r) => r.paperId !== null && mine.has(r.paperId));
+  const byCur = new Map<string, PositionTrades['dividends'][number]>();
+  for (const r of own.filter((x) => x.action === 'dividend')) {
+    const d = byCur.get(r.currency) ?? { currency: r.currency, count: 0, gross: 0, net: 0, tax: 0, first: r.valueDate, last: r.valueDate };
+    d.count++;
+    d.gross += r.gross;
+    d.net += r.net;
+    d.tax += r.taxIl + r.taxAbroad;
+    if (r.valueDate < d.first) d.first = r.valueDate;
+    if (r.valueDate > d.last) d.last = r.valueDate;
+    byCur.set(r.currency, d);
+  }
+  const traded = rows.filter((r) => (r.action === 'buy' || r.action === 'sell') && r.gross !== 0 && r.commission !== 0);
+  const amount = traded.reduce((a, r) => a + Math.abs(r.gross), 0);
+  const commission = traded.reduce((a, r) => a + Math.abs(r.commission), 0);
+  const yearAgo = new Date(Date.parse(`${today}T00:00:00Z`) - 365 * DAY_MS).toISOString().slice(0, 10);
+  const fees = rows.filter((r) => r.action === 'custody_fee' && r.currency === 'ILS' && r.valueDate > yearAgo && r.valueDate <= today);
+  return {
+    since: rows.reduce((m, r) => (r.valueDate < m ? r.valueDate : m), rows[0]!.valueDate),
+    dividends: [...byCur.values()].map((d) => ({ ...d, gross: r2(d.gross), net: r2(d.net), tax: r2(d.tax) })),
+    sells: own.filter((r) => r.action === 'sell').map((r) => ({ date: r.valueDate, quantity: r.quantity, price: r.price, currency: r.currency, net: r2(r.net), commission: r2(r.commission) })),
+    commissionRate: amount > 0 ? Math.round((commission / amount) * 1_000_000) / 1_000_000 : null,
+    commissionTrades: traded.length,
+    custodyFees12mIls: Math.round(fees.reduce((a, r) => a + r.net, 0) * 100),
   };
 }
