@@ -25,6 +25,7 @@ import {
   INSTITUTIONS,
   maskNumber,
   type NormalizedRow,
+  fibiEarliestTradeDate,
   fibiTradeRanges,
   parseFibiCostLotsText,
   parseFibiFxText,
@@ -625,13 +626,14 @@ const FIBI_TRADES_ROUTE = '#/Online/OnCapitalMarket/OnMyportfolio/OnlnNewSecurit
 
 /**
  * Explore run for the trade history (position-view.md §7): the page shows nothing until it is given a date range, so
- * fill the form's dates for 10, 3 and 1 years back, press its own "show" (הצג), and record each answer: the visible
- * text and the markup of every frame. Everything goes to one file in data/dumps (owner-only, retention 14 days); the log
+ * fill the form's dates, press its own "show" (הצג), and record each answer: the visible text and the markup of every
+ * frame. First 10 years back; when the bank refuses and names its earliest date, again from that date; 1 year back as
+ * the last fallback. Everything goes to one file in data/dumps (owner-only, retention 14 days); the log
  * gets counts only. Never throws: a failure is recorded in the file and the sync carries on.
  */
 export async function exploreBeinleumiTrades(page: Page, institutionId: string): Promise<void> {
   const landing = page.url();
-  const out: { recordedAt: string; route: string; attempts: Array<{ years: number; from: string; till: string; formFound: boolean; shown: boolean; frameUrls: string[]; dateLines: number; text: string; html: string; error?: string }> } = {
+  const out: { recordedAt: string; route: string; attempts: Array<{ range: string; from: string; till: string; formFound: boolean; shown: boolean; frameUrls: string[]; dateLines: number; text: string; html: string; error?: string }> } = {
     recordedAt: new Date().toISOString(),
     route: FIBI_TRADES_ROUTE,
     attempts: [],
@@ -649,7 +651,14 @@ export async function exploreBeinleumiTrades(page: Page, institutionId: string):
     return { text: text.slice(0, 200_000), html: html.slice(0, 1_500_000), frameUrls: page.frames().map((f) => urlForLog(f.url())) };
   };
   try {
-    for (const r of fibiTradeRanges(todayLocal())) {
+    const ranges = fibiTradeRanges(todayLocal());
+    const span = (years: number) => {
+      const r = ranges.find((x) => x.years === years)!;
+      return { from: r.from, till: r.till };
+    };
+    const oneYear = span(1);
+    const queue: Array<{ range: string; from: string; till: string }> = [{ range: '10y', ...span(10) }];
+    for (let r = queue.shift(); r; r = queue.shift()) {
       const attempt: (typeof out.attempts)[number] = { ...r, formFound: false, shown: false, frameUrls: [], dateLines: 0, text: '', html: '' };
       out.attempts.push(attempt);
       try {
@@ -691,7 +700,12 @@ export async function exploreBeinleumiTrades(page: Page, institutionId: string):
       } catch (e) {
         attempt.error = e instanceof Error ? e.message : String(e);
       }
-      log.info({ institution: institutionId, years: r.years, formFound: attempt.formFound, shown: attempt.shown, dateLines: attempt.dateLines, chars: attempt.text.length, ...(attempt.error ? { err: attempt.error } : {}) }, 'explore: trade history range recorded');
+      // refused for starting too early: ask again from the date the bank names, then 1 year as the last fallback
+      const earliest = fibiEarliestTradeDate(attempt.text);
+      const tried = (range: string) => out.attempts.some((a) => a.range === range) || queue.some((q) => q.range === range);
+      if (earliest && !tried('earliest')) queue.push({ range: 'earliest', from: earliest, till: r.till });
+      else if ((earliest || attempt.error || !attempt.formFound) && !tried('1y')) queue.push({ range: '1y', ...oneYear });
+      log.info({ institution: institutionId, range: r.range, refused: !!earliest, formFound: attempt.formFound, shown: attempt.shown, dateLines: attempt.dateLines, chars: attempt.text.length, ...(attempt.error ? { err: attempt.error } : {}) }, 'explore: trade history range recorded');
     }
   } finally {
     await page.goto(landing, { waitUntil: 'networkidle2', timeout: 45_000 }).catch(() => undefined);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fibiFormDate, fibiTradeRanges, parseFibiCostLotsText, parseFibiTaxYearText } from './fibi-pages.js';
+import { fibiEarliestTradeDate, fibiFormDate, fibiTradeRanges, parseFibiCostLotsText, parseFibiTaxYearText } from './fibi-pages.js';
 
 // shaped like the pages recorded on 2026-11-18, with made-up papers, numbers and amounts
 const LOTS = [
@@ -99,16 +99,21 @@ describe('FIBI tax-year summary page', () => {
 });
 
 describe('trade history ranges (explore run)', () => {
-  it('writes dates the way the bank form does and steps back 10, 3 and 1 years', () => {
+  it('writes dates the way the bank form does and steps back 10 and 1 years', () => {
     expect(fibiFormDate('2026-11-21')).toBe('21/11/2026');
     expect(fibiTradeRanges('2026-11-21')).toEqual([
       { years: 10, from: '21/11/2016', till: '21/11/2026' },
-      { years: 3, from: '21/11/2023', till: '21/11/2026' },
       { years: 1, from: '21/11/2025', till: '21/11/2026' },
     ]);
   });
 
+  it("reads the earliest date from the bank's refusal, in either order", () => {
+    expect(fibiEarliestTradeDate('תנועות בני"ע\n01/01/2024   ניתן להציג תנועות רק מתאריך   ')).toBe('01/01/2024');
+    expect(fibiEarliestTradeDate('ניתן להציג תנועות רק מתאריך 02/03/2024')).toBe('02/03/2024');
+    expect(fibiEarliestTradeDate('פירוט תנועות לכל ניירות הערך 05/05/2026')).toBeNull();
+  });
+
   it('a leap day falls back to the 28th in a year without one', () => {
-    expect(fibiTradeRanges('2028-02-29').map((r) => r.from)).toEqual(['28/02/2018', '28/02/2025', '28/02/2027']);
+    expect(fibiTradeRanges('2028-02-29').map((r) => r.from)).toEqual(['28/02/2018', '28/02/2027']);
   });
 });

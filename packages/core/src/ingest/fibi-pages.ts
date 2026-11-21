@@ -278,10 +278,17 @@ export function parseFibiTaxYearText(text: string): TaxYearSummary | null {
 
 /**
  * The trade history page (תנועות בני"ע) shows nothing until it is given a range: its form takes dd/mm/yyyy dates
- * (#TrFrom / #TrTill, recorded 2026-11-18). How far back the bank allows is unknown, so the explore run asks for 10
- * years, then 3, then 1, and records what each answer looks like (position-view.md §7).
+ * (#TrFrom / #TrTill, recorded 2026-11-18). The bank refuses a range that starts too early and names its earliest date
+ * (about 2.9 years back on 2026-11-21), so the explore run asks for 10 years, then from that date, with 1 year as the
+ * fallback (position-view.md §7).
  */
-export const FIBI_TRADE_RANGE_YEARS = [10, 3, 1] as const;
+export const FIBI_TRADE_RANGE_YEARS = [10, 1] as const;
+
+/** The bank's refusal of a too-early range names the earliest date it allows ("dd/mm/yyyy ניתן להציג תנועות רק מתאריך"). */
+export function fibiEarliestTradeDate(text: string): string | null {
+  const m = /(\d{2}\/\d{2}\/\d{4})\s*ניתן להציג תנועות רק מתאריך|ניתן להציג תנועות רק מתאריך\s*(\d{2}\/\d{2}\/\d{4})/.exec(text);
+  return m ? (m[1] ?? m[2] ?? null) : null;
+}
 
 /** A date as the bank's form writes it: dd/mm/yyyy. `iso` is yyyy-mm-dd. */
 export function fibiFormDate(iso: string): string {

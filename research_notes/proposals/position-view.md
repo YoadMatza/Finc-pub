@@ -137,7 +137,7 @@ behind a toggle, the sources line and the disclaimer. A block that cannot be com
 lots, or lots that fit no holding, the section is a single muted line. Hebrew and English texts; numbers are LTR
 isolates inside Hebrew sentences. Wording is facts only ("you would receive about"), never "you should".
 
-## 7. Trade history explore run (built 2026-11-21, not run yet)
+## 7. Trade history explore run (built and run 2026-11-21)
 
 תנועות בני"ע shows nothing until it gets a date range, so the explore run (`--explore`) now fills its form itself:
 `#TrFrom` / `#TrTill` in dd/mm/yyyy, 10, 3 and 1 years back to today (how far back the bank allows is unknown), then
@@ -147,3 +147,11 @@ wider portal survey runs only with `FINC_EXPLORE_ALL=1` or in manual mode. Check
 ranges submitted with the right dates); the bank run is the owner's, from the host (the scraper container cannot write
 dumps): stop the worker, `.\finc spike beinleumi --explore --headless`, start the worker, unlock. The parser for sells
 follows once the result layout is recorded.
+
+**First run (2026-11-21):** the bank refuses a range that starts more than about 2.9 years back (1,055 days) and names
+its earliest date ("ניתן להציג תנועות רק מתאריך"); 10 and 3 years were refused. One year back answered with a table of
+17 columns (paper, symbol, value date, action, quantity, price, account type, currency, gross and net proceeds, tax in
+Israel and abroad, commission, a derivatives fee, reason for a non-execution, registration and payment dates): 16 rows,
+dividends and custody fees, no buys or sells. The purchases behind the current lots are older than the bank's limit,
+so cost stays on the lots page; this page can add sells, dividends and fees within the limit. The run now asks for 10
+years, then again from the date the bank names, with 1 year as the last fallback (checked against a local fake page).
